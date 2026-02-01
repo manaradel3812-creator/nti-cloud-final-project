@@ -1,0 +1,14 @@
+# Terraform state and cache
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+
+# Sensitive variables
+*.tfvars
+.terraform/
+terraform.tfstate
+terraform.tfstate.backup
+.terraform/
+terraform.tfstate
+.terraform/
