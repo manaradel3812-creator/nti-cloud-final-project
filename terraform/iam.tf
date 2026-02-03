@@ -1,4 +1,6 @@
-# 1. Role for EKS Cluster
+##############################
+# 1️⃣ EKS Cluster Role
+##############################
 resource "aws_iam_role" "eks_cluster_role" {
   name = "${var.cluster_name}-cluster-role"
 
@@ -17,7 +19,9 @@ resource "aws_iam_role_policy_attachment" "eks_policy" {
   role       = aws_iam_role.eks_cluster_role.name
 }
 
-# 2. Role for Worker Nodes
+##############################
+# 2️⃣ Worker Nodes Role
+##############################
 resource "aws_iam_role" "eks_nodes_role" {
   name = "${var.cluster_name}-node-group-role"
 
@@ -46,6 +50,9 @@ resource "aws_iam_role_policy_attachment" "nodes_AmazonEC2ContainerRegistryReadO
   role       = aws_iam_role.eks_nodes_role.name
 }
 
+##############################
+# 3️⃣ Fargate Role
+##############################
 resource "aws_iam_role" "eks_fargate_role" {
   name = "${var.cluster_name}-fargate-pod-role"
 
@@ -53,9 +60,7 @@ resource "aws_iam_role" "eks_fargate_role" {
     Version = "2012-10-17"
     Statement = [{
       Effect = "Allow"
-      Principal = {
-        Service = "eks-fargate-pods.amazonaws.com"
-      }
+      Principal = { Service = "eks-fargate-pods.amazonaws.com" }
       Action = "sts:AssumeRole"
     }]
   })
@@ -66,3 +71,45 @@ resource "aws_iam_role_policy_attachment" "eks_fargate_policy" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSFargatePodExecutionRolePolicy"
 }
 
+##############################
+# 4️⃣ ALB Controller Role (IRSA) + Policy
+##############################
+
+# IAM Policy JSON موجود في iam/alb-policy.json
+resource "aws_iam_policy" "alb_controller_policy" {
+  name   = "${var.cluster_name}-alb-controller-policy"
+  policy = file("${path.module}/iam/alb-policy.json")
+}
+
+# IRSA Role
+resource "aws_iam_role" "alb_controller_role" {
+  name = "${var.cluster_name}-alb-controller-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Federated = data.aws_iam_openid_connect_provider.oidc.arn
+        }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "${replace(
+              data.aws_iam_openid_connect_provider.oidc.url,
+              "https://",
+              ""
+            )}:sub" = "system:serviceaccount:kube-system:aws-load-balancer-controller"
+          }
+        }
+      }
+    ]
+  })
+}
+
+# Attach Policy to Role
+resource "aws_iam_role_policy_attachment" "alb_attach" {
+  role       = aws_iam_role.alb_controller_role.name
+  policy_arn = aws_iam_policy.alb_controller_policy.arn
+}

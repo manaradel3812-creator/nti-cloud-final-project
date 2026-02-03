@@ -12,7 +12,7 @@ terraform {
     encrypt        = true                      
   }
 }
-#provider "aws" {
+#provider "cd .." {
  # region     = "us-east-1"
   #access_key = "##"
   #secret_key = "##"

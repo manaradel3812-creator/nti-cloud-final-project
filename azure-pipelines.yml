@@ -1,0 +1,109 @@
+trigger:
+  branches:
+    include:
+      - main
+
+variables:
+  AWS_REGION: 'us-east-1'
+  CLUSTER_NAME: 'nonprod-eks-cluster'
+  TF_WORKING_DIR: 'terraform'
+  HELM_NAMESPACE: 'kube-system'
+  SERVICE_ACCOUNT: 'aws-load-balancer-controller'
+  HELM_RELEASE: 'aws-load-balancer-controller'
+
+stages:
+
+# =========================
+# 1️⃣ Terraform Stage
+# =========================
+- stage: Terraform
+  displayName: "Provision EKS Infrastructure"
+  jobs:
+  - job: Terraform_Apply
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+
+    - task: AWSCLI@1
+      inputs:
+        awsCredentials: 'AWS-Service-Connection'
+        regionName: '$(AWS_REGION)'
+        command: 'configure'
+
+    - script: |
+        cd $(TF_WORKING_DIR)
+        terraform init
+        terraform apply -auto-approve -var-file=nonprod.tfvars
+      displayName: "Terraform Apply"
+
+# =========================
+# 2️⃣ ALB Controller Stage
+# =========================
+- stage: ALB_Controller
+  dependsOn: Terraform
+  displayName: "Install AWS Load Balancer Controller"
+  jobs:
+  - job: Helm_ALB
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+
+    - task: AWSCLI@1
+      inputs:
+        awsCredentials: 'AWS-Service-Connection'
+        regionName: '$(AWS_REGION)'
+        command: 'configure'
+
+    - task: KubectlInstaller@0
+      inputs:
+        versionSpec: 'latest'
+
+    - script: |
+        aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION)
+      displayName: "Connect to EKS"
+
+    - task: HelmInstaller@1
+      inputs:
+        helmVersionToInstall: 'latest'
+
+    - script: |
+        kubectl create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+        kubectl create serviceaccount $(SERVICE_ACCOUNT) -n $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+        kubectl annotate serviceaccount $(SERVICE_ACCOUNT) \
+        eks.amazonaws.com/role-arn=$(aws iam get-role --role-name nonprod-eks-cluster-alb-controller-role --query Role.Arn --output text) \
+        -n $(HELM_NAMESPACE) --overwrite
+      displayName: "Create Service Account (IRSA)"
+
+    - script: |
+        helm repo add eks https://aws.github.io/eks-charts
+        helm repo update
+        helm upgrade --install $(HELM_RELEASE) eks/aws-load-balancer-controller \
+          -n $(HELM_NAMESPACE) \
+          --set clusterName=$(CLUSTER_NAME) \
+          --set serviceAccount.create=false \
+          --set serviceAccount.name=$(SERVICE_ACCOUNT)
+      displayName: "Install ALB Controller"
+
+# =========================
+# 3️⃣ Deploy Hello From Manar
+# =========================
+- stage: Deploy_App
+  dependsOn: ALB_Controller
+  displayName: "Deploy Hello From Manar App"
+  jobs:
+  - job: Deploy_App
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+
+    - task: KubectlInstaller@0
+      inputs:
+        versionSpec: 'latest'
+
+    - script: |
+        aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION)
+      displayName: "Connect to EKS"
+
+    - script: |
+        kubectl apply -f k8s/hello-manar/
+      displayName: "Deploy App + Ingress"
