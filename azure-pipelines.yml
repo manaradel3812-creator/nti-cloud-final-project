@@ -1,109 +1,170 @@
-trigger:
-  branches:
-    include:
-      - main
+trigger: none
+pr: none
+
+parameters:
+  - name: env
+    displayName: Environment
+    type: string
+    default: nonprod
+    values: [nonprod, prod]
+
+  - name: destroy
+    displayName: Destroy
+    type: boolean
+    default: false
 
 variables:
-  AWS_REGION: 'us-east-1'
+  TF_DIR: terraform
+  TF_VAR_FILE: '${{ parameters.env }}.tfvars'
+  AWS_SERVICE_CONNECTION: manar        # <--- تم تعديل هنا
+  AWS_REGION: us-east-1
   CLUSTER_NAME: 'nonprod-eks-cluster'
-  TF_WORKING_DIR: 'terraform'
   HELM_NAMESPACE: 'kube-system'
   SERVICE_ACCOUNT: 'aws-load-balancer-controller'
   HELM_RELEASE: 'aws-load-balancer-controller'
+  APP_DIR: k8s/hello-manar
 
 stages:
 
 # =========================
 # 1️⃣ Terraform Stage
 # =========================
-- stage: Terraform
-  displayName: "Provision EKS Infrastructure"
+- stage: Infra
+  displayName: Terraform Infra
   jobs:
-  - job: Terraform_Apply
-    pool:
-      vmImage: ubuntu-latest
-    steps:
+    - job: Terraform
+      pool:
+        vmImage: ubuntu-latest
+      steps:
+        - checkout: self
 
-    - task: AWSCLI@1
-      inputs:
-        awsCredentials: 'AWS-Service-Connection'
-        regionName: '$(AWS_REGION)'
-        command: 'configure'
+        - task: TerraformInstaller@1
+          displayName: Install Terraform
+          inputs:
+            terraformVersion: latest
 
-    - script: |
-        cd $(TF_WORKING_DIR)
-        terraform init
-        terraform apply -auto-approve -var-file=nonprod.tfvars
-      displayName: "Terraform Apply"
+        - task: AWSShellScript@1
+          displayName: Terraform init
+          inputs:
+            awsCredentials: $(AWS_SERVICE_CONNECTION)
+            regionName: $(AWS_REGION)
+            scriptType: inline
+            inlineScript: |
+              set -euo pipefail
+              cd "$(TF_DIR)"
+              terraform init -input=false
+
+        - task: AWSShellScript@1
+          displayName: Terraform plan
+          condition: eq('${{ parameters.destroy }}', false)
+          inputs:
+            awsCredentials: $(AWS_SERVICE_CONNECTION)
+            regionName: $(AWS_REGION)
+            scriptType: inline
+            inlineScript: |
+              set -euo pipefail
+              cd "$(TF_DIR)"
+              terraform plan -out=tfplan -input=false -var-file="$(TF_VAR_FILE)"
+
+        - task: AWSShellScript@1
+          displayName: Terraform plan -destroy
+          condition: eq('${{ parameters.destroy }}', true)
+          inputs:
+            awsCredentials: $(AWS_SERVICE_CONNECTION)
+            regionName: $(AWS_REGION)
+            scriptType: inline
+            inlineScript: |
+              set -euo pipefail
+              cd "$(TF_DIR)"
+              terraform plan -destroy -out=tfplan -input=false -var-file="$(TF_VAR_FILE)"
+
+        - task: AWSShellScript@1
+          displayName: Terraform apply
+          inputs:
+            awsCredentials: $(AWS_SERVICE_CONNECTION)
+            regionName: $(AWS_REGION)
+            scriptType: inline
+            inlineScript: |
+              set -euo pipefail
+              cd "$(TF_DIR)"
+              terraform apply -auto-approve -input=false tfplan
 
 # =========================
-# 2️⃣ ALB Controller Stage
+# 2️⃣ ALB Helm Stage
 # =========================
 - stage: ALB_Controller
-  dependsOn: Terraform
-  displayName: "Install AWS Load Balancer Controller"
+  dependsOn: Infra
+  displayName: Install ALB Controller
   jobs:
-  - job: Helm_ALB
-    pool:
-      vmImage: ubuntu-latest
-    steps:
+    - job: Helm_ALB
+      pool:
+        vmImage: ubuntu-latest
+      steps:
+        - checkout: self
 
-    - task: AWSCLI@1
-      inputs:
-        awsCredentials: 'AWS-Service-Connection'
-        regionName: '$(AWS_REGION)'
-        command: 'configure'
+        - task: KubectlInstaller@0
+          inputs:
+            versionSpec: 'latest'
 
-    - task: KubectlInstaller@0
-      inputs:
-        versionSpec: 'latest'
+        - task: HelmInstaller@1
+          inputs:
+            helmVersionToInstall: 'latest'
 
-    - script: |
-        aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION)
-      displayName: "Connect to EKS"
+        - task: AWSShellScript@1
+          displayName: Configure kubeconfig
+          inputs:
+            awsCredentials: $(AWS_SERVICE_CONNECTION)
+            regionName: $(AWS_REGION)
+            scriptType: inline
+            inlineScript: |
+              set -euo pipefail
+              aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION)
 
-    - task: HelmInstaller@1
-      inputs:
-        helmVersionToInstall: 'latest'
+        - script: |
+            kubectl create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+            kubectl create serviceaccount $(SERVICE_ACCOUNT) -n $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+            kubectl annotate serviceaccount $(SERVICE_ACCOUNT) \
+            eks.amazonaws.com/role-arn=$(aws iam get-role --role-name $(CLUSTER_NAME)-alb-controller-role --query Role.Arn --output text) \
+            -n $(HELM_NAMESPACE) --overwrite
+          displayName: "Create Service Account (IRSA)"
 
-    - script: |
-        kubectl create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
-        kubectl create serviceaccount $(SERVICE_ACCOUNT) -n $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
-        kubectl annotate serviceaccount $(SERVICE_ACCOUNT) \
-        eks.amazonaws.com/role-arn=$(aws iam get-role --role-name nonprod-eks-cluster-alb-controller-role --query Role.Arn --output text) \
-        -n $(HELM_NAMESPACE) --overwrite
-      displayName: "Create Service Account (IRSA)"
-
-    - script: |
-        helm repo add eks https://aws.github.io/eks-charts
-        helm repo update
-        helm upgrade --install $(HELM_RELEASE) eks/aws-load-balancer-controller \
-          -n $(HELM_NAMESPACE) \
-          --set clusterName=$(CLUSTER_NAME) \
-          --set serviceAccount.create=false \
-          --set serviceAccount.name=$(SERVICE_ACCOUNT)
-      displayName: "Install ALB Controller"
+        - script: |
+            helm repo add eks https://aws.github.io/eks-charts
+            helm repo update
+            helm upgrade --install $(HELM_RELEASE) eks/aws-load-balancer-controller \
+              -n $(HELM_NAMESPACE) \
+              --set clusterName=$(CLUSTER_NAME) \
+              --set serviceAccount.create=false \
+              --set serviceAccount.name=$(SERVICE_ACCOUNT)
+          displayName: "Install ALB Controller"
 
 # =========================
-# 3️⃣ Deploy Hello From Manar
+# 3️⃣ Deploy App Stage
 # =========================
 - stage: Deploy_App
   dependsOn: ALB_Controller
-  displayName: "Deploy Hello From Manar App"
+  displayName: Deploy Hello From Manar
   jobs:
-  - job: Deploy_App
-    pool:
-      vmImage: ubuntu-latest
-    steps:
+    - job: Deploy_App
+      pool:
+        vmImage: ubuntu-latest
+      steps:
+        - checkout: self
 
-    - task: KubectlInstaller@0
-      inputs:
-        versionSpec: 'latest'
+        - task: KubectlInstaller@0
+          inputs:
+            versionSpec: 'latest'
 
-    - script: |
-        aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION)
-      displayName: "Connect to EKS"
+        - task: AWSShellScript@1
+          displayName: Configure kubeconfig
+          inputs:
+            awsCredentials: $(AWS_SERVICE_CONNECTION)
+            regionName: $(AWS_REGION)
+            scriptType: inline
+            inlineScript: |
+              set -euo pipefail
+              aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION)
 
-    - script: |
-        kubectl apply -f k8s/hello-manar/
-      displayName: "Deploy App + Ingress"
+        - script: |
+            kubectl apply -f $(APP_DIR)/
+          displayName: "Deploy App + Ingress"
