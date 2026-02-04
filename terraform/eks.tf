@@ -6,12 +6,13 @@ resource "aws_eks_cluster" "main" {
   role_arn = aws_iam_role.eks_cluster_role.arn
 
   vpc_config {
-    subnet_ids             = data.aws_subnets.private.ids
+    subnet_ids              = data.aws_subnets.private.ids
     endpoint_private_access = true
     endpoint_public_access  = true
   }
 
-  enable_irsa = true  # ✅ يضمن إنشاء OIDC Provider تلقائياً
+  # enable_irsa removed because it's not supported in your AWS provider version
+  # IRSA will be handled via Helm/kubectl in your pipeline
 
   depends_on = [
     aws_iam_role_policy_attachment.eks_policy

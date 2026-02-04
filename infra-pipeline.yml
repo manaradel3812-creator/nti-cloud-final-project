@@ -1,78 +1,100 @@
-trigger: none
-pr: none
-
-parameters:
-  - name: env
-    type: string
-    default: nonprod
-    values: [nonprod, prod]
-
-  - name: destroy
-    type: boolean
-    default: false
-
-variables:
-  TF_DIR: terraform
-  TF_VAR_FILE: '${{ parameters.env }}.tfvars'
-  AWS_REGION: us-east-1
-  AWS_SERVICE_CONNECTION: manar 
-
-stages:
 - stage: Infra
   displayName: Terraform Infra
   jobs:
-  - job: Terraform
-    pool:
-      name: aws-self-hosted
-    steps:
-    - checkout: self
+    - job: Terraform
+      pool:
+        name: aws-self-hosted
+      steps:
+        - checkout: self
 
-    - task: TerraformInstaller@1
-      inputs:
-        terraformVersion: latest
+        # -------------------------
+        # Install Terraform
+        # -------------------------
+        - task: TerraformInstaller@1
+          displayName: Install Terraform
+          inputs:
+            terraformVersion: latest
 
-    - task: AWSShellScript@1
-      displayName: Terraform Init
-      inputs:
-        awsCredentials: $(AWS_SERVICE_CONNECTION)
-        regionName: $(AWS_REGION)
-        scriptType: inline
-        inlineScript: |
-          set -e
-          cd $(TF_DIR)
-          terraform init
+        # -------------------------
+        # Check AWS Credentials
+        # -------------------------
+        - task: AWSShellScript@1
+          displayName: "Check AWS Credentials"
+          inputs:
+            awsCredentials: $(AWS_SERVICE_CONNECTION)
+            regionName: $(AWS_REGION)
+            scriptType: inline
+            inlineScript: |
+              set -euo pipefail
+              echo "✅ AWS Caller Identity:"
+              aws sts get-caller-identity
 
-    - task: AWSShellScript@1
-      displayName: Terraform Plan
-      condition: eq('${{ parameters.destroy }}', false)
-      inputs:
-        awsCredentials: $(AWS_SERVICE_CONNECTION)
-        regionName: $(AWS_REGION)
-        scriptType: inline
-        inlineScript: |
-          set -e
-          cd $(TF_DIR)
-          terraform plan -out=tfplan -var-file=$(TF_VAR_FILE)
+        # -------------------------
+        # Terraform Init
+        # -------------------------
+        - task: AWSShellScript@1
+          displayName: Terraform Init
+          inputs:
+            awsCredentials: $(AWS_SERVICE_CONNECTION)
+            regionName: $(AWS_REGION)
+            scriptType: inline
+            inlineScript: |
+              set -euo pipefail
+              cd $(TF_DIR)
+              terraform init -input=false
 
-    - task: AWSShellScript@1
-      displayName: Terraform Destroy Plan
-      condition: eq('${{ parameters.destroy }}', true)
-      inputs:
-        awsCredentials: $(AWS_SERVICE_CONNECTION)
-        regionName: $(AWS_REGION)
-        scriptType: inline
-        inlineScript: |
-          set -e
-          cd $(TF_DIR)
-          terraform plan -destroy -out=tfplan -var-file=$(TF_VAR_FILE)
+        # -------------------------
+        # Terraform Plan (Create/Update)
+        # -------------------------
+        - task: AWSShellScript@1
+          displayName: Terraform Plan
+          condition: eq('${{ parameters.destroy }}', false)
+          inputs:
+            awsCredentials: $(AWS_SERVICE_CONNECTION)
+            regionName: $(AWS_REGION)
+            scriptType: inline
+            inlineScript: |
+              set -euo pipefail
+              cd $(TF_DIR)
+              if [[ ! -f "$(TF_VAR_FILE)" ]]; then
+                echo "❌ Variables file '$(TF_VAR_FILE)' not found in $(TF_DIR)"
+                exit 1
+              fi
+              terraform plan -out=tfplan -input=false -var-file="$(TF_VAR_FILE)"
 
-    - task: AWSShellScript@1
-      displayName: Terraform Apply
-      inputs:
-        awsCredentials: $(AWS_SERVICE_CONNECTION)
-        regionName: $(AWS_REGION)
-        scriptType: inline
-        inlineScript: |
-          set -e
-          cd $(TF_DIR)
-          terraform apply -auto-approve tfplan
+        # -------------------------
+        # Terraform Plan (Destroy)
+        # -------------------------
+        - task: AWSShellScript@1
+          displayName: Terraform Destroy Plan
+          condition: eq('${{ parameters.destroy }}', true)
+          inputs:
+            awsCredentials: $(AWS_SERVICE_CONNECTION)
+            regionName: $(AWS_REGION)
+            scriptType: inline
+            inlineScript: |
+              set -euo pipefail
+              cd $(TF_DIR)
+              if [[ ! -f "$(TF_VAR_FILE)" ]]; then
+                echo "❌ Variables file '$(TF_VAR_FILE)' not found in $(TF_DIR)"
+                exit 1
+              fi
+              terraform plan -destroy -out=tfplan -input=false -var-file="$(TF_VAR_FILE)"
+
+        # -------------------------
+        # Terraform Apply
+        # -------------------------
+        - task: AWSShellScript@1
+          displayName: Terraform Apply
+          inputs:
+            awsCredentials: $(AWS_SERVICE_CONNECTION)
+            regionName: $(AWS_REGION)
+            scriptType: inline
+            inlineScript: |
+              set -euo pipefail
+              cd $(TF_DIR)
+              if [[ ! -f "tfplan" ]]; then
+                echo "❌ Terraform plan 'tfplan' not found"
+                exit 1
+              fi
+              terraform apply -auto-approve -input=false tfplan
