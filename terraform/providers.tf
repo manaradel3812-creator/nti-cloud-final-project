@@ -14,8 +14,8 @@ terraform {
 }
 provider "aws" {
   region     = "us-east-1"
-  access_key = "A#"
-  secret_key = "o#"
+  #access_key = "A#"
+  #secret_key = "o#"
 }
 #provider "aws" {
  # region = "us-east-1"
