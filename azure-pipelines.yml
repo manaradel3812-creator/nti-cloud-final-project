@@ -22,7 +22,7 @@ variables:
   SERVICE_ACCOUNT: 'aws-load-balancer-controller'
   HELM_RELEASE: 'aws-load-balancer-controller'
   APP_DIR: k8s/hello-manar
-  AWS_SERVICE_CONNECTION: manar # اسم الـ Service Connection الخاص بكِ
+  AWS_SERVICE_CONNECTION: manar
 
 stages:
 
@@ -43,9 +43,17 @@ stages:
           inputs:
             terraformVersion: latest
 
-        # استخدام AWSShellScript لضمان وصول Terraform للـ S3 Backend والـ AWS
         - task: AWSShellScript@1
-          displayName: Terraform Init & Plan/Apply
+          displayName: "Check AWS Credentials"
+          inputs:
+            awsCredentials: $(AWS_SERVICE_CONNECTION)
+            regionName: $(AWS_REGION)
+            scriptType: inline
+            inlineScript: |
+              aws sts get-caller-identity
+
+        - task: AWSShellScript@1
+          displayName: Terraform init
           inputs:
             awsCredentials: $(AWS_SERVICE_CONNECTION)
             regionName: $(AWS_REGION)
@@ -53,19 +61,56 @@ stages:
             inlineScript: |
               cd "$(TF_DIR)"
               terraform init -input=false
-              
-              if [ "${{ parameters.destroy }}" == "true" ]; then
-                terraform destroy -auto-approve -var-file="$(TF_VAR_FILE)"
-              else
-                terraform apply -auto-approve -var-file="$(TF_VAR_FILE)"
+
+        - task: AWSShellScript@1
+          displayName: Terraform plan
+          condition: eq('${{ parameters.destroy }}', false)
+          inputs:
+            awsCredentials: $(AWS_SERVICE_CONNECTION)
+            regionName: $(AWS_REGION)
+            scriptType: inline
+            inlineScript: |
+              cd "$(TF_DIR)"
+              if [[ ! -f "$(TF_VAR_FILE)" ]]; then
+                echo "❌ Variables file '$(TF_VAR_FILE)' not found"
+                exit 1
               fi
+              terraform plan -out=tfplan -input=false -var-file="$(TF_VAR_FILE)"
+
+        - task: AWSShellScript@1
+          displayName: Terraform plan -destroy
+          condition: eq('${{ parameters.destroy }}', true)
+          inputs:
+            awsCredentials: $(AWS_SERVICE_CONNECTION)
+            regionName: $(AWS_REGION)
+            scriptType: inline
+            inlineScript: |
+              cd "$(TF_DIR)"
+              if [[ ! -f "$(TF_VAR_FILE)" ]]; then
+                echo "❌ Variables file '$(TF_VAR_FILE)' not found"
+                exit 1
+              fi
+              terraform plan -destroy -out=tfplan -input=false -var-file="$(TF_VAR_FILE)"
+
+        - task: AWSShellScript@1
+          displayName: Terraform apply
+          inputs:
+            awsCredentials: $(AWS_SERVICE_CONNECTION)
+            regionName: $(AWS_REGION)
+            scriptType: inline
+            inlineScript: |
+              cd "$(TF_DIR)"
+              if [[ ! -f "tfplan" ]]; then
+                echo "❌ Terraform plan 'tfplan' not found"
+                exit 1
+              fi
+              terraform apply -auto-approve -input=false tfplan
 
 # =========================
 # 2️⃣ ALB Helm Stage
 # =========================
 - stage: ALB_Controller
   dependsOn: Infra
-  condition: succeeded()
   displayName: Install ALB Controller
   jobs:
     - job: Helm_ALB
@@ -75,13 +120,16 @@ stages:
         - checkout: self
 
         - task: KubectlInstaller@0
-          inputs: {versionSpec: 'latest'}
-        - task: HelmInstaller@1
-          inputs: {helmVersionToInstall: 'latest'}
+          inputs:
+            versionSpec: 'latest'
 
-        # الخطوة الحاسمة: استخدام AWSShellScript لتنفيذ أوامر kubectl و helm
+        - task: HelmInstaller@1
+          inputs:
+            helmVersionToInstall: 'latest'
+
+        # ✅ Configure kubeconfig using Service Connection (without exec plugin)
         - task: AWSShellScript@1
-          displayName: "Configure K8s & Deploy ALB Controller"
+          displayName: Configure kubeconfig
           inputs:
             awsCredentials: $(AWS_SERVICE_CONNECTION)
             regionName: $(AWS_REGION)
@@ -89,22 +137,43 @@ stages:
             inlineScript: |
               set -euo pipefail
               
-              # تحديث التوثيق للـ Cluster
-              aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION)
+              # export AWS keys from Service Connection
+              export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
+              export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
+              export AWS_SESSION_TOKEN=$AWS_SESSION_TOKEN
+
+              # update kubeconfig for this pipeline
+              aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION) --alias $(CLUSTER_NAME) --kubeconfig kubeconfig.yaml
+
+        # ✅ Create Service Account (IRSA)
+        - task: AWSShellScript@1
+          displayName: "Create Service Account (IRSA)"
+          inputs:
+            awsCredentials: $(AWS_SERVICE_CONNECTION)
+            regionName: $(AWS_REGION)
+            scriptType: inline
+            inlineScript: |
+              set -euo pipefail
+              export KUBECONFIG=kubeconfig.yaml
               
-              # إنشاء الـ Namespace والـ Service Account بصلاحيات IRSA
               kubectl create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
-              
               kubectl create serviceaccount $(SERVICE_ACCOUNT) -n $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
-              
-              # جلب الـ ARN الخاص بالـ Role الذي تم إنشاؤه بواسطة Terraform
               ROLE_ARN=$(aws iam get-role --role-name $(CLUSTER_NAME)-alb-controller-role --query Role.Arn --output text)
-              
               kubectl annotate serviceaccount $(SERVICE_ACCOUNT) \
                 eks.amazonaws.com/role-arn=$ROLE_ARN \
                 -n $(HELM_NAMESPACE) --overwrite
-              
-              # تثبيت ALB Controller باستخدام Helm
+
+        # ✅ Install ALB Controller using Helm
+        - task: AWSShellScript@1
+          displayName: "Install ALB Controller"
+          inputs:
+            awsCredentials: $(AWS_SERVICE_CONNECTION)
+            regionName: $(AWS_REGION)
+            scriptType: inline
+            inlineScript: |
+              set -euo pipefail
+              export KUBECONFIG=kubeconfig.yaml
+
               helm repo add eks https://aws.github.io/eks-charts
               helm repo update
               helm upgrade --install $(HELM_RELEASE) eks/aws-load-balancer-controller \
@@ -118,8 +187,7 @@ stages:
 # =========================
 - stage: Deploy_App
   dependsOn: ALB_Controller
-  condition: succeeded()
-  displayName: Deploy Application
+  displayName: Deploy Hello From Manar
   jobs:
     - job: Deploy_App
       pool:
@@ -128,23 +196,31 @@ stages:
         - checkout: self
 
         - task: KubectlInstaller@0
-          inputs: {versionSpec: 'latest'}
+          inputs:
+            versionSpec: 'latest'
 
-        # تحويل هذه الخطوة أيضاً لـ AWSShellScript لضمان صلاحيات kubectl apply
+        # Configure kubeconfig + export AWS keys
         - task: AWSShellScript@1
-          displayName: "Update Kubeconfig & Deploy App"
+          displayName: Configure kubeconfig
           inputs:
             awsCredentials: $(AWS_SERVICE_CONNECTION)
             regionName: $(AWS_REGION)
             scriptType: inline
             inlineScript: |
               set -euo pipefail
-              aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION)
-              
-              # التأكد من المسار قبل التنفيذ
-              if [ -d "$(APP_DIR)" ]; then
-                kubectl apply -f $(APP_DIR)/
-              else
-                echo "❌ Directory $(APP_DIR) not found!"
-                exit 1
-              fi
+              export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
+              export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
+              export AWS_SESSION_TOKEN=$AWS_SESSION_TOKEN
+              aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION) --alias $(CLUSTER_NAME) --kubeconfig kubeconfig.yaml
+
+        # Deploy App + Ingress
+        - task: AWSShellScript@1
+          displayName: "Deploy App + Ingress"
+          inputs:
+            awsCredentials: $(AWS_SERVICE_CONNECTION)
+            regionName: $(AWS_REGION)
+            scriptType: inline
+            inlineScript: |
+              set -euo pipefail
+              export KUBECONFIG=kubeconfig.yaml
+              kubectl apply -f $(APP_DIR)/
