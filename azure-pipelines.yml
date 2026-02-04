@@ -14,7 +14,7 @@ parameters:
 
 variables:
   AWS_REGION: us-east-1
-  INFRA_CONNECTION: manar    # سنبقي عليه للمرحلة الأولى فقط لأن Terraform يتعامل معه جيداً
+  INFRA_CONNECTION: manar
   TF_DIR: terraform
   TF_VAR_FILE: '${{ parameters.env }}.tfvars'
   CLUSTER_NAME: '${{ parameters.env }}-eks-cluster'
@@ -25,19 +25,22 @@ variables:
 stages:
 
 #################################
-# 1️⃣ Stage: Terraform (تستخدم manar)
+# 1️⃣ Stage: Infrastructure (Terraform)
 #################################
 - stage: Infra
   displayName: "Infrastructure Deployment"
   jobs:
-  - job: Terraform
+  - job: TerraformJob
     pool: { vmImage: ubuntu-latest }
     steps:
     - checkout: self
+
     - task: TerraformInstaller@1
+      displayName: "Install Terraform"
       inputs: { terraformVersion: latest }
+
     - task: AWSShellScript@1
-      displayName: "Run Terraform"
+      displayName: "Run Terraform Init & Apply"
       inputs:
         awsCredentials: $(INFRA_CONNECTION)
         regionName: $(AWS_REGION)
@@ -52,65 +55,66 @@ stages:
           fi
 
 #################################
-# 2️⃣ Stage: Platform (تستخدم الـ Secrets يدوياً)
+# 2️⃣ Stage: Platform Setup (Kubernetes)
 #################################
 - stage: Platform
   displayName: "Kubernetes Platform Setup"
   dependsOn: Infra
   condition: and(succeeded(), eq('${{ parameters.destroy }}', false))
   jobs:
-  - job: Helm
+  - job: HelmJob
     pool: { vmImage: ubuntu-latest }
+    # تعريف الـ Environment Variables للـ Job بالكامل لضمان قراءة الـ Secrets
+    variables:
+      AWS_ACCESS_KEY_ID: $(MY_AWS_ACCESS_KEY)
+      AWS_SECRET_ACCESS_KEY: $(MY_AWS_SECRET_KEY)
+    
     steps:
     - checkout: self
+
     - task: KubectlInstaller@0
+      displayName: "Install Kubectl"
       inputs: { versionSpec: latest }
+
     - task: HelmInstaller@1
+      displayName: "Install Helm"
       inputs: { helmVersionToInstall: latest }
 
-    - script: |
-        set -euo pipefail
-        
-        echo "🛠️ Creating physical AWS credentials file..."
+    # تاسك: تهيئة ملف الصلاحيات (الحل لخطأ 253)
+    - bash: |
         mkdir -p ~/.aws
+        echo "[default]" > ~/.aws/credentials
+        echo "aws_access_key_id = $AWS_ACCESS_KEY_ID" >> ~/.aws/credentials
+        echo "aws_secret_access_key = $AWS_SECRET_ACCESS_KEY" >> ~/.aws/credentials
         
-        # كتابة ملف الصلاحيات يدوياً من المتغيرات السرية التي قمتِ بتعريفها في الـ UI
-        cat <<EOF > ~/.aws/credentials
-        [default]
-        aws_access_key_id = $(MY_AWS_ACCESS_KEY)
-        aws_secret_access_key = $(MY_AWS_SECRET_KEY)
-        EOF
+        aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION) --kubeconfig $(KUBECONFIG_PATH)
+      displayName: "Task 1: Configure AWS Credentials File"
 
-        cat <<EOF > ~/.aws/config
-        [default]
-        region = $(AWS_REGION)
-        output = json
-        EOF
-        
-        chmod 600 ~/.aws/credentials
-        
-        # إعداد ملف الـ Kubeconfig
+    # تاسك: التحقق من الاتصال بالكلستر
+    - bash: |
         export KUBECONFIG=$(KUBECONFIG_PATH)
-        echo "🔐 Updating Kubeconfig..."
-        aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION) --kubeconfig $KUBECONFIG
-
-        echo "🔍 TESTING CONNECTION..."
-        # هذا السطر سيعمل الآن لأن aws cli سيجد ملف ~/.aws/credentials
         kubectl get nodes
+        kubectl cluster-info
+      displayName: "Task 2: Verify EKS Connection"
 
-        echo "🛠️ Deploying IRSA & Namespace..."
+    # تاسك: إعداد الـ Namespace والـ IRSA
+    - bash: |
+        export KUBECONFIG=$(KUBECONFIG_PATH)
         kubectl create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
         kubectl create serviceaccount $(SERVICE_ACCOUNT) -n $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
-
+        
         ROLE_ARN=$(aws iam get-role --role-name $(CLUSTER_NAME)-alb-controller-role --query Role.Arn --output text)
         kubectl annotate serviceaccount $(SERVICE_ACCOUNT) eks.amazonaws.com/role-arn=$ROLE_ARN -n $(HELM_NAMESPACE) --overwrite
+      displayName: "Task 3: Setup Namespace & IRSA Annotations"
 
-        echo "📦 Installing AWS Load Balancer Controller..."
+    # تاسك: جلب الـ VPC ID وتثبيت الـ ALB Controller
+    - bash: |
+        export KUBECONFIG=$(KUBECONFIG_PATH)
+        VPC_ID=$(aws eks describe-cluster --name $(CLUSTER_NAME) --query "cluster.resourcesVpcConfig.vpcId" --output text)
+        
         helm repo add eks https://aws.github.io/eks-charts
         helm repo update
         
-        VPC_ID=$(aws eks describe-cluster --name $(CLUSTER_NAME) --query "cluster.resourcesVpcConfig.vpcId" --output text)
-
         helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
           -n $(HELM_NAMESPACE) \
           --set clusterName=$(CLUSTER_NAME) \
@@ -118,16 +122,15 @@ stages:
           --set vpcId=$VPC_ID \
           --set serviceAccount.create=false \
           --set serviceAccount.name=$(SERVICE_ACCOUNT)
+      displayName: "Task 4: Install AWS Load Balancer Controller"
 
-        echo "🚀 Installing ArgoCD & Cert-Manager..."
+    # تاسك: تثبيت الأدوات الإضافية (ArgoCD & Cert-Manager)
+    - bash: |
+        export KUBECONFIG=$(KUBECONFIG_PATH)
         helm repo add jetstack https://charts.jetstack.io
         helm repo add argo https://argoproj.github.io/argo-helm
         helm repo update
         
         helm upgrade --install cert-manager jetstack/cert-manager -n cert-manager --create-namespace --set installCRDs=true
         helm upgrade --install argocd argo/argo-cd -n argocd --create-namespace
-      displayName: "Manual Credential Injection & Deploy"
-      env:
-        # ربط الـ Secrets بالبيئة (مهم جداً)
-        MY_AWS_ACCESS_KEY: $(MY_AWS_ACCESS_KEY)
-        MY_AWS_SECRET_KEY: $(MY_AWS_SECRET_KEY)
+      displayName: "Task 5: Install Cert-Manager & ArgoCD"
