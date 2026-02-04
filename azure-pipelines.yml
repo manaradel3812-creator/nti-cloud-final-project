@@ -7,7 +7,6 @@ parameters:
     type: string
     default: nonprod
     values: [nonprod, prod]
-
   - name: destroy
     displayName: Destroy Infra
     type: boolean
@@ -19,88 +18,62 @@ variables:
   TF_DIR: terraform
   TF_VAR_FILE: '${{ parameters.env }}.tfvars'
   CLUSTER_NAME: '${{ parameters.env }}-eks-cluster'
+  HELM_NAMESPACE: kube-system
+  SERVICE_ACCOUNT: aws-load-balancer-controller
+  KUBECONFIG_PATH: $(Pipeline.Workspace)/kubeconfig.yaml
+
+stages:
 
 #################################
-# Stage 1: Terraform Infra
+# 1️⃣ Stage: Terraform Infra
 #################################
-stages:
 - stage: Infra
   displayName: Terraform Infra
   jobs:
   - job: Terraform
     pool:
-      name: aws-self-hosted
+      vmImage: ubuntu-latest
     steps:
     - checkout: self
-
     - task: TerraformInstaller@1
-      inputs:
-        terraformVersion: latest
+      inputs: { terraformVersion: latest }
 
     - task: AWSShellScript@1
-      displayName: Terraform Init
+      displayName: "Terraform Run"
       inputs:
         awsCredentials: $(AWS_SERVICE_CONNECTION)
         regionName: $(AWS_REGION)
         scriptType: inline
         inlineScript: |
-          set -e
+          set -euo pipefail
           cd $(TF_DIR)
-          terraform init
-
-    - task: AWSShellScript@1
-      displayName: Terraform Plan
-      condition: eq('${{ parameters.destroy }}', false)
-      inputs:
-        awsCredentials: $(AWS_SERVICE_CONNECTION)
-        regionName: $(AWS_REGION)
-        scriptType: inline
-        inlineScript: |
-          set -e
-          cd $(TF_DIR)
-          terraform plan -out=tfplan -var-file=$(TF_VAR_FILE)
-
-    - task: AWSShellScript@1
-      displayName: Terraform Destroy Plan
-      condition: eq('${{ parameters.destroy }}', true)
-      inputs:
-        awsCredentials: $(AWS_SERVICE_CONNECTION)
-        regionName: $(AWS_REGION)
-        scriptType: inline
-        inlineScript: |
-          set -e
-          cd $(TF_DIR)
-          terraform plan -destroy -out=tfplan -var-file=$(TF_VAR_FILE)
-
-    - task: AWSShellScript@1
-      displayName: Terraform Apply
-      inputs:
-        awsCredentials: $(AWS_SERVICE_CONNECTION)
-        regionName: $(AWS_REGION)
-        scriptType: inline
-        inlineScript: |
-          set -e
-          cd $(TF_DIR)
-          terraform apply -auto-approve tfplan
+          terraform init -input=false
+          if [ "${{ parameters.destroy }}" = "true" ]; then
+            terraform destroy -auto-approve -var-file=$(TF_VAR_FILE)
+          else
+            terraform apply -auto-approve -var-file=$(TF_VAR_FILE)
+          fi
 
 #################################
-# Stage 2: Platform / Helm
+# 2️⃣ Stage: Platform / Helm
 #################################
 - stage: Platform
   displayName: Platform & Helm
   dependsOn: Infra
-  condition: succeeded('Infra')
+  condition: and(succeeded(), eq('${{ parameters.destroy }}', false))
   jobs:
   - job: Helm
     pool:
-      name: aws-self-hosted
+      vmImage: ubuntu-latest
     steps:
     - checkout: self
+    - task: KubectlInstaller@0
+      inputs: { versionSpec: latest }
+    - task: HelmInstaller@1
+      inputs: { helmVersionToInstall: latest }
 
-    # 1️⃣ Setup kubeconfig + export AWS creds
     - task: AWSShellScript@1
-      displayName: Setup EKS Access
-      name: setup
+      displayName: "Install Platform Tools (ALB, Argo, Cert-Manager)"
       inputs:
         awsCredentials: $(AWS_SERVICE_CONNECTION)
         regionName: $(AWS_REGION)
@@ -108,82 +81,47 @@ stages:
         inlineScript: |
           set -euo pipefail
 
-          aws eks update-kubeconfig \
-            --name $(CLUSTER_NAME) \
-            --region $(AWS_REGION)
+          # ✅ تصدير المتغيرات لضمان عمل kubectl
+          export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
+          export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
+          export AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
+          export KUBECONFIG=$(KUBECONFIG_PATH)
 
-          VPC_ID=$(aws eks describe-cluster \
-            --name $(CLUSTER_NAME) \
-            --query "cluster.resourcesVpcConfig.vpcId" \
-            --output text)
+          echo "🔐 Updating Kubeconfig..."
+          aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION) --kubeconfig $KUBECONFIG
 
-          echo "##vso[task.setvariable variable=VPC_ID]$VPC_ID"
-          echo "##vso[task.setvariable variable=AWS_ACCESS_KEY_ID;issecret=true]$AWS_ACCESS_KEY_ID"
-          echo "##vso[task.setvariable variable=AWS_SECRET_ACCESS_KEY;issecret=true]$AWS_SECRET_ACCESS_KEY"
-          echo "##vso[task.setvariable variable=AWS_SESSION_TOKEN;issecret=true]${AWS_SESSION_TOKEN:-}"
+          echo "🛠️ Creating IRSA & Namespace..."
+          kubectl create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create serviceaccount $(SERVICE_ACCOUNT) -n $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
 
-    # 2️⃣ Helm repos
-    - task: Bash@3
-      displayName: Helm Repos
-      env:
-        AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
-        AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
-        AWS_SESSION_TOKEN: $(AWS_SESSION_TOKEN)
-        AWS_DEFAULT_REGION: $(AWS_REGION)
-      inputs:
-        targetType: inline
-        script: |
-          set -e
+          # محاولة جلب الـ Role مع Retry (لأنه قد يأخذ وقتاً بعد الـ Terraform)
+          ROLE_ARN=""
+          for i in {1..6}; do
+            ROLE_ARN=$(aws iam get-role --role-name $(CLUSTER_NAME)-alb-controller-role --query Role.Arn --output text 2>/dev/null || echo "")
+            if [ -n "$ROLE_ARN" ]; then break; fi
+            echo "Waiting for IAM Role... ($i/6)"
+            sleep 10
+          done
+
+          if [ -z "$ROLE_ARN" ]; then echo "❌ Role Not Found"; exit 1; fi
+
+          kubectl annotate serviceaccount $(SERVICE_ACCOUNT) eks.amazonaws.com/role-arn=$ROLE_ARN -n $(HELM_NAMESPACE) --overwrite
+
+          echo "📦 Installing Helm Charts..."
           helm repo add eks https://aws.github.io/eks-charts
           helm repo add jetstack https://charts.jetstack.io
           helm repo add argo https://argoproj.github.io/argo-helm
-          helm repo add hashicorp https://helm.releases.hashicorp.com
-          helm repo add external-secrets https://charts.external-secrets.io
           helm repo update
 
-    # 3️⃣ AWS Load Balancer Controller
-    - task: HelmDeploy@0
-      displayName: Install AWS Load Balancer Controller
-      env:
-        AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
-        AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
-        AWS_SESSION_TOKEN: $(AWS_SESSION_TOKEN)
-        AWS_DEFAULT_REGION: $(AWS_REGION)
-      inputs:
-        connectionType: None
-        namespace: kube-system
-        command: upgrade
-        chartType: Name
-        chartName: eks/aws-load-balancer-controller
-        releaseName: aws-load-balancer-controller
-        install: true
-        arguments: >
-          --set clusterName=$(CLUSTER_NAME)
-          --set region=$(AWS_REGION)
-          --set vpcId=$(VPC_ID)
+          VPC_ID=$(aws eks describe-cluster --name $(CLUSTER_NAME) --query "cluster.resourcesVpcConfig.vpcId" --output text)
 
-    # 4️⃣ cert-manager
-    - task: HelmDeploy@0
-      displayName: Install cert-manager
-      inputs:
-        connectionType: None
-        namespace: cert-manager
-        command: upgrade
-        chartType: Name
-        chartName: jetstack/cert-manager
-        releaseName: cert-manager
-        install: true
-        arguments: --create-namespace --set installCRDs=true
+          helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+            -n $(HELM_NAMESPACE) \
+            --set clusterName=$(CLUSTER_NAME) \
+            --set region=$(AWS_REGION) \
+            --set vpcId=$VPC_ID \
+            --set serviceAccount.create=false \
+            --set serviceAccount.name=$(SERVICE_ACCOUNT)
 
-    # 5️⃣ Argo CD
-    - task: HelmDeploy@0
-      displayName: Install Argo CD
-      inputs:
-        connectionType: None
-        namespace: argocd
-        command: upgrade
-        chartType: Name
-        chartName: argo/argo-cd
-        releaseName: argocd
-        install: true
-        arguments: --create-namespace
+          helm upgrade --install cert-manager jetstack/cert-manager -n cert-manager --create-namespace --set installCRDs=true
+          helm upgrade --install argocd argo/argo-cd -n argocd --create-namespace
