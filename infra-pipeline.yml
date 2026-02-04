@@ -16,7 +16,7 @@ parameters:
 variables:
   TF_DIR: terraform
   TF_VAR_FILE: '${{ parameters.env }}.tfvars'
-  AWS_SERVICE_CONNECTION: aws-cred
+  AWS_SERVICE_CONNECTION: manar
   AWS_REGION: us-east-1
 
 stages:
