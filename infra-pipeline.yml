@@ -13,15 +13,12 @@ parameters:
   default: false
 
 variables:
-  TF_DIR: terraform           # ✅ Only use the terraform folder
+  TF_DIR: terraform
   TF_VAR_FILE: '${{ parameters.env }}.tfvars'
   AWS_SERVICE_CONNECTION: manar
   AWS_REGION: us-east-1
 
 stages:
-# =========================
-# 1️⃣ Terraform Stage Only
-# =========================
 - stage: Infra
   displayName: Terraform Infra
   jobs:
@@ -31,7 +28,7 @@ stages:
       steps:
         - checkout: self
 
-        # Debug: check terraform folder contents
+        # Debug: list Terraform files
         - script: |
             echo "Terraform folder contents ($(TF_DIR)):"
             ls -la $(TF_DIR)
@@ -57,7 +54,7 @@ stages:
 
         # Terraform plan (create/update)
         - task: AWSShellScript@1
-          displayName: Terraform plan (robust)
+          displayName: Terraform plan
           condition: eq('${{ parameters.destroy }}', false)
           inputs:
             awsCredentials: $(AWS_SERVICE_CONNECTION)
@@ -67,14 +64,14 @@ stages:
               set -euo pipefail
               cd "$(TF_DIR)"
               if [[ ! -f "$(TF_VAR_FILE)" ]]; then
-                echo "❌ Error: Variables file '$(TF_VAR_FILE)' does not exist in $(TF_DIR)"
+                echo "❌ Error: Variables file '$(TF_VAR_FILE)' does not exist"
                 exit 1
               fi
               terraform plan -out=tfplan -input=false -var-file="$(TF_VAR_FILE)"
 
         # Terraform plan (destroy)
         - task: AWSShellScript@1
-          displayName: Terraform plan -destroy (robust)
+          displayName: Terraform plan -destroy
           condition: eq('${{ parameters.destroy }}', true)
           inputs:
             awsCredentials: $(AWS_SERVICE_CONNECTION)
@@ -84,14 +81,14 @@ stages:
               set -euo pipefail
               cd "$(TF_DIR)"
               if [[ ! -f "$(TF_VAR_FILE)" ]]; then
-                echo "❌ Error: Variables file '$(TF_VAR_FILE)' does not exist in $(TF_DIR)"
+                echo "❌ Error: Variables file '$(TF_VAR_FILE)' does not exist"
                 exit 1
               fi
               terraform plan -destroy -out=tfplan -input=false -var-file="$(TF_VAR_FILE)"
 
         # Terraform apply
         - task: AWSShellScript@1
-          displayName: Terraform apply (robust)
+          displayName: Terraform apply
           inputs:
             awsCredentials: $(AWS_SERVICE_CONNECTION)
             regionName: $(AWS_REGION)
@@ -100,7 +97,7 @@ stages:
               set -euo pipefail
               cd "$(TF_DIR)"
               if [[ ! -f "tfplan" ]]; then
-                echo "❌ Error: Terraform plan 'tfplan' does not exist. Did the plan stage fail?"
+                echo "❌ Error: Terraform plan 'tfplan' not found"
                 exit 1
               fi
               terraform apply -auto-approve -input=false tfplan
