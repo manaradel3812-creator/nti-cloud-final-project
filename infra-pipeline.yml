@@ -16,17 +16,17 @@ parameters:
 variables:
   TF_DIR: terraform
   TF_VAR_FILE: '${{ parameters.env }}.tfvars'
-  AWS_SERVICE_CONNECTION: manar
+  AWS_SERVICE_CONNECTION: manar    # Must exist in Azure DevOps
   AWS_REGION: us-east-1
 
 stages:
   - stage: Infra
-    displayName: Terraform Infra
+    displayName: Infra (Terraform)
     jobs:
       - job: Terraform
         displayName: Terraform
         pool:
-          vmImage: ubuntu-latest
+          vmImage: ubuntu-latest  # Microsoft-hosted agent
         steps:
           - checkout: self
 
@@ -45,7 +45,7 @@ stages:
                 terraform init -input=false
 
           # -------------------------
-          # Terraform Plan (Create/Update)
+          # Terraform Plan
           # -------------------------
           - task: AWSShellScript@1
             displayName: Terraform plan
@@ -95,7 +95,7 @@ stages:
                 set -euo pipefail
                 cd "$(TF_DIR)"
                 if [[ ! -f "tfplan" ]]; then
-                  echo "❌ Terraform plan 'tfplan' not found. Did the plan stage fail?"
+                  echo "❌ Terraform plan 'tfplan' not found"
                   exit 1
                 fi
                 terraform apply -auto-approve -input=false tfplan
