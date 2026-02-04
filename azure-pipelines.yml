@@ -36,7 +36,6 @@ stages:
     steps:
     - checkout: self
     - task: TerraformInstaller@1
-      displayName: "Install Terraform"
       inputs: { terraformVersion: latest }
 
     - task: AWSShellScript@1
@@ -48,14 +47,10 @@ stages:
         inlineScript: |
           set -euo pipefail
           cd $(TF_DIR)
-          
           terraform init -input=false
-          
           if [ "${{ parameters.destroy }}" = "true" ]; then
-            echo "🔥 Destroying Resources..."
             terraform destroy -auto-approve -var-file=$(TF_VAR_FILE)
           else
-            echo "🚀 Applying Resources..."
             terraform apply -auto-approve -var-file=$(TF_VAR_FILE)
           fi
 
@@ -65,7 +60,6 @@ stages:
 - stage: Platform
   displayName: "Kubernetes Platform Setup"
   dependsOn: Infra
-  # Only run if Terraform was successful and we are NOT destroying
   condition: and(succeeded(), eq('${{ parameters.destroy }}', false))
   jobs:
   - job: Helm
@@ -78,76 +72,67 @@ stages:
     - task: HelmInstaller@1
       inputs: { helmVersionToInstall: latest }
 
+    # ✅ التعديل الجوهري: استخراج المفاتيح وحقنها في الـ Shell Environment
     - task: AWSShellScript@1
-      displayName: "Setup EKS Access & Helm Tools"
+      displayName: "Inject AWS Secrets"
       inputs:
         awsCredentials: $(AWS_SERVICE_CONNECTION)
         regionName: $(AWS_REGION)
         scriptType: inline
         inlineScript: |
-          set -euo pipefail
+          echo "##vso[task.setvariable variable=AWS_ACCESS_KEY_ID;issecret=true]$AWS_ACCESS_KEY_ID"
+          echo "##vso[task.setvariable variable=AWS_SECRET_ACCESS_KEY;issecret=true]$AWS_SECRET_ACCESS_KEY"
+          echo "##vso[task.setvariable variable=AWS_SESSION_TOKEN;issecret=true]${AWS_SESSION_TOKEN:-}"
 
-          # 🔑 CRITICAL: Export AWS credentials for the kubectl exec-plugin
-          # This prevents "Unable to locate credentials" / Exit Code 253
-          export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
-          export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
-          export AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
-          export AWS_DEFAULT_REGION=$(AWS_REGION)
-          export KUBECONFIG=$(KUBECONFIG_PATH)
+    # ✅ التعديل الثاني: استخدام Bash عادي يقرأ المتغيرات المحقونة
+    - script: |
+        set -euo pipefail
+        
+        export KUBECONFIG=$(KUBECONFIG_PATH)
+        
+        echo "🔐 Updating Kubeconfig..."
+        aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION) --kubeconfig $KUBECONFIG
 
-          echo "🔐 Updating Kubeconfig..."
-          aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION) --kubeconfig $KUBECONFIG
+        echo "🔍 Verifying Connection..."
+        # هذا السطر كان يفشل بـ 253، الآن سيجد المفاتيح في الـ Env
+        kubectl get nodes
 
-          echo "🔍 Verifying Connection..."
-          kubectl get nodes
+        echo "🛠️ Configuring IRSA..."
+        kubectl create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+        kubectl create serviceaccount $(SERVICE_ACCOUNT) -n $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
 
-          echo "🛠️ Configuring IRSA (IAM Roles for Service Accounts)..."
-          kubectl create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
-          kubectl create serviceaccount $(SERVICE_ACCOUNT) -n $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+        echo "📡 Fetching Role ARN..."
+        ROLE_ARN=$(aws iam get-role --role-name $(CLUSTER_NAME)-alb-controller-role --query Role.Arn --output text)
+        
+        kubectl annotate serviceaccount $(SERVICE_ACCOUNT) \
+          eks.amazonaws.com/role-arn=$ROLE_ARN \
+          -n $(HELM_NAMESPACE) --overwrite
 
-          # Fetch Role ARN with a retry loop (IAM eventually consistency)
-          ROLE_ARN=""
-          for i in {1..6}; do
-            ROLE_ARN=$(aws iam get-role --role-name $(CLUSTER_NAME)-alb-controller-role --query Role.Arn --output text 2>/dev/null || echo "")
-            if [ -n "$ROLE_ARN" ]; then break; fi
-            echo "Waiting for IAM Role propagation... ($i/6)"
-            sleep 10
-          done
+        echo "📦 Installing AWS Load Balancer Controller..."
+        helm repo add eks https://aws.github.io/eks-charts
+        helm repo update
+        
+        VPC_ID=$(aws eks describe-cluster --name $(CLUSTER_NAME) --query "cluster.resourcesVpcConfig.vpcId" --output text)
 
-          if [ -z "$ROLE_ARN" ]; then 
-            echo "❌ Error: Role $(CLUSTER_NAME)-alb-controller-role not found!"
-            exit 1 
-          fi
+        helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+          -n $(HELM_NAMESPACE) \
+          --set clusterName=$(CLUSTER_NAME) \
+          --set region=$(AWS_REGION) \
+          --set vpcId=$VPC_ID \
+          --set serviceAccount.create=false \
+          --set serviceAccount.name=$(SERVICE_ACCOUNT) \
+          --wait --timeout 300s
 
-          kubectl annotate serviceaccount $(SERVICE_ACCOUNT) \
-            eks.amazonaws.com/role-arn=$ROLE_ARN \
-            -n $(HELM_NAMESPACE) --overwrite
-
-          echo "📦 Installing Platform Components (ALB, Cert-Manager, ArgoCD)..."
-          helm repo add eks https://aws.github.io/eks-charts
-          helm repo add jetstack https://charts.jetstack.io
-          helm repo add argo https://argoproj.github.io/argo-helm
-          helm repo update
-
-          VPC_ID=$(aws eks describe-cluster --name $(CLUSTER_NAME) --query "cluster.resourcesVpcConfig.vpcId" --output text)
-
-          # Install AWS Load Balancer Controller
-          helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
-            -n $(HELM_NAMESPACE) \
-            --set clusterName=$(CLUSTER_NAME) \
-            --set region=$(AWS_REGION) \
-            --set vpcId=$VPC_ID \
-            --set serviceAccount.create=false \
-            --set serviceAccount.name=$(SERVICE_ACCOUNT) \
-            --wait --timeout 300s
-
-          # Install Cert-Manager
-          helm upgrade --install cert-manager jetstack/cert-manager \
-            -n cert-manager --create-namespace \
-            --set installCRDs=true
-
-          # Install ArgoCD
-          helm upgrade --install argocd argo/argo-cd \
-            -n argocd --create-namespace
-
-          echo "✅ Platform setup completed successfully!"
+        echo "🚀 Installing Platform Tools..."
+        helm repo add jetstack https://charts.jetstack.io
+        helm repo add argo https://argoproj.github.io/argo-helm
+        helm repo update
+        
+        helm upgrade --install cert-manager jetstack/cert-manager -n cert-manager --create-namespace --set installCRDs=true
+        helm upgrade --install argocd argo/argo-cd -n argocd --create-namespace
+      displayName: "Deploy Helm Charts"
+      env:
+        # ربط المتغيرات التي تم حقنها بالسكربت
+        AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
+        AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
+        AWS_SESSION_TOKEN: $(AWS_SESSION_TOKEN)
