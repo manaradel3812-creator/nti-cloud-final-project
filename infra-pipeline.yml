@@ -13,7 +13,7 @@
         - task: TerraformInstaller@1
           displayName: Install Terraform
           inputs:
-            terraformVersion: latest
+            terraformVersion: "1.5.7"  # Pin to a stable version
 
         # -------------------------
         # Check AWS Credentials
@@ -41,7 +41,8 @@
             inlineScript: |
               set -euo pipefail
               cd $(TF_DIR)
-              terraform init -input=false
+              # Ensure correct provider version in lock file
+              terraform init -input=false -upgrade
 
         # -------------------------
         # Terraform Plan (Create/Update)
