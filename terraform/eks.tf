@@ -1,21 +1,4 @@
-# =====================================
-# Terraform AWS Provider
-# =====================================
-terraform {
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = ">= 4.0"
-    }
-  }
-  required_version = ">= 1.5"
-}
-
-
-
-# =====================================
 # EKS Cluster
-# =====================================
 resource "aws_eks_cluster" "main" {
   name     = var.cluster_name
   role_arn = aws_iam_role.eks_cluster_role.arn
@@ -31,9 +14,7 @@ resource "aws_eks_cluster" "main" {
   ]
 }
 
-# =====================================
 # OIDC Provider for IRSA
-# =====================================
 data "aws_eks_cluster" "cluster" {
   name = aws_eks_cluster.main.name
 }
@@ -52,9 +33,7 @@ resource "aws_iam_openid_connect_provider" "eks" {
   thumbprint_list = [data.tls_certificate.oidc.certificates[0].sha1_fingerprint]
 }
 
-# =====================================
 # Node Group
-# =====================================
 resource "aws_eks_node_group" "main" {
   cluster_name    = aws_eks_cluster.main.name
   node_group_name = "managed-nodes"
@@ -81,9 +60,7 @@ resource "aws_eks_node_group" "main" {
   ]
 }
 
-# =====================================
 # Fargate Profile
-# =====================================
 resource "aws_eks_fargate_profile" "default" {
   cluster_name           = aws_eks_cluster.main.name
   fargate_profile_name   = "default"

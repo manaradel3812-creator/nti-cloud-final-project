@@ -2,15 +2,16 @@ trigger: none
 pr: none
 
 parameters:
-- name: env
-  displayName: Environment
-  type: string
-  default: nonprod
-  values: [nonprod, prod]
-- name: destroy
-  displayName: Destroy
-  type: boolean
-  default: false
+  - name: env
+    displayName: Environment
+    type: string
+    default: prod
+    values: [nonprod, prod]
+
+  - name: destroy
+    displayName: Destroy
+    type: boolean
+    default: false
 
 variables:
   TF_DIR: terraform
@@ -19,85 +20,82 @@ variables:
   AWS_REGION: us-east-1
 
 stages:
-- stage: Infra
-  displayName: Terraform Infra
-  jobs:
-    - job: Terraform
-      pool:
-        vmImage: ubuntu-latest
-      steps:
-        - checkout: self
+  - stage: Infra
+    displayName: Infra (Terraform)
+    jobs:
+      - job: Terraform
+        displayName: Terraform
+        pool:
+          name: aws-self-hosted
+        steps:
+          - checkout: self
 
-        # Debug: list Terraform files
-        - script: |
-            echo "Terraform folder contents ($(TF_DIR)):"
-            ls -la $(TF_DIR)
-          displayName: "Debug: List Terraform files"
+          # -------------------------
+          # Terraform Init
+          # -------------------------
+          - task: AWSShellScript@1
+            displayName: Terraform init
+            inputs:
+              awsCredentials: $(AWS_SERVICE_CONNECTION)
+              regionName: $(AWS_REGION)
+              scriptType: inline
+              inlineScript: |
+                set -euo pipefail
+                cd "$(TF_DIR)"
+                terraform init -input=false
 
-        # Install Terraform
-        - task: TerraformInstaller@1
-          displayName: Install Terraform
-          inputs:
-            terraformVersion: latest
+          # -------------------------
+          # Terraform Plan (Create/Update)
+          # -------------------------
+          - task: AWSShellScript@1
+            displayName: Terraform plan
+            condition: eq('${{ parameters.destroy }}', false)
+            inputs:
+              awsCredentials: $(AWS_SERVICE_CONNECTION)
+              regionName: $(AWS_REGION)
+              scriptType: inline
+              inlineScript: |
+                set -euo pipefail
+                cd "$(TF_DIR)"
+                if [[ ! -f "$(TF_VAR_FILE)" ]]; then
+                  echo "❌ Variables file '$(TF_VAR_FILE)' not found"
+                  exit 1
+                fi
+                terraform plan -out=tfplan -input=false -var-file="$(TF_VAR_FILE)"
 
-        # Terraform init
-        - task: AWSShellScript@1
-          displayName: Terraform init
-          inputs:
-            awsCredentials: $(AWS_SERVICE_CONNECTION)
-            regionName: $(AWS_REGION)
-            scriptType: inline
-            inlineScript: |
-              set -euo pipefail
-              cd "$(TF_DIR)"
-              terraform init -input=false
+          # -------------------------
+          # Terraform Plan Destroy
+          # -------------------------
+          - task: AWSShellScript@1
+            displayName: Terraform plan -destroy
+            condition: eq('${{ parameters.destroy }}', true)
+            inputs:
+              awsCredentials: $(AWS_SERVICE_CONNECTION)
+              regionName: $(AWS_REGION)
+              scriptType: inline
+              inlineScript: |
+                set -euo pipefail
+                cd "$(TF_DIR)"
+                if [[ ! -f "$(TF_VAR_FILE)" ]]; then
+                  echo "❌ Variables file '$(TF_VAR_FILE)' not found"
+                  exit 1
+                fi
+                terraform plan -destroy -out=tfplan -input=false -var-file="$(TF_VAR_FILE)"
 
-        # Terraform plan (create/update)
-        - task: AWSShellScript@1
-          displayName: Terraform plan
-          condition: eq('${{ parameters.destroy }}', false)
-          inputs:
-            awsCredentials: $(AWS_SERVICE_CONNECTION)
-            regionName: $(AWS_REGION)
-            scriptType: inline
-            inlineScript: |
-              set -euo pipefail
-              cd "$(TF_DIR)"
-              if [[ ! -f "$(TF_VAR_FILE)" ]]; then
-                echo "❌ Error: Variables file '$(TF_VAR_FILE)' does not exist"
-                exit 1
-              fi
-              terraform plan -out=tfplan -input=false -var-file="$(TF_VAR_FILE)"
-
-        # Terraform plan (destroy)
-        - task: AWSShellScript@1
-          displayName: Terraform plan -destroy
-          condition: eq('${{ parameters.destroy }}', true)
-          inputs:
-            awsCredentials: $(AWS_SERVICE_CONNECTION)
-            regionName: $(AWS_REGION)
-            scriptType: inline
-            inlineScript: |
-              set -euo pipefail
-              cd "$(TF_DIR)"
-              if [[ ! -f "$(TF_VAR_FILE)" ]]; then
-                echo "❌ Error: Variables file '$(TF_VAR_FILE)' does not exist"
-                exit 1
-              fi
-              terraform plan -destroy -out=tfplan -input=false -var-file="$(TF_VAR_FILE)"
-
-        # Terraform apply
-        - task: AWSShellScript@1
-          displayName: Terraform apply
-          inputs:
-            awsCredentials: $(AWS_SERVICE_CONNECTION)
-            regionName: $(AWS_REGION)
-            scriptType: inline
-            inlineScript: |
-              set -euo pipefail
-              cd "$(TF_DIR)"
-              if [[ ! -f "tfplan" ]]; then
-                echo "❌ Error: Terraform plan 'tfplan' not found"
-                exit 1
-              fi
-              terraform apply -auto-approve -input=false tfplan
+          # -------------------------
+          # Terraform Apply
+          # -------------------------
+          - task: AWSShellScript@1
+            displayName: Terraform apply
+            inputs:
+              awsCredentials: $(AWS_SERVICE_CONNECTION)
+              regionName: $(AWS_REGION)
+              scriptType: inline
+              inlineScript: |
+                set -euo pipefail
+                cd "$(TF_DIR)"
+                if [[ ! -f "tfplan" ]]; then
+                  echo "❌ Terraform plan 'tfplan' not found. Did the plan stage fail?"
+                  exit 1
+                fi
+                terraform apply -auto-approve -input=false tfplan
