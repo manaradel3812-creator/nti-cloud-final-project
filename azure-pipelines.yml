@@ -14,9 +14,8 @@ parameters:
     default: false
 
 variables:
-  TF_DIR: terraform
+  TF_DIR: terraform                 # ✅ Terraform folder
   TF_VAR_FILE: '${{ parameters.env }}.tfvars'
-  AWS_SERVICE_CONNECTION: manar        # <--- تم تعديل هنا
   AWS_REGION: us-east-1
   CLUSTER_NAME: 'nonprod-eks-cluster'
   HELM_NAMESPACE: 'kube-system'
@@ -38,15 +37,25 @@ stages:
       steps:
         - checkout: self
 
+        # Install Terraform
         - task: TerraformInstaller@1
           displayName: Install Terraform
           inputs:
             terraformVersion: latest
 
+        # Use AWS Service Connection 'manar' for credentials
+        - task: AWSCLI@1
+          displayName: "Check AWS Credentials"
+          inputs:
+            awsCredentials: 'manar'
+            regionName: $(AWS_REGION)
+            command: 'sts get-caller-identity'
+
+        # Terraform init
         - task: AWSShellScript@1
           displayName: Terraform init
           inputs:
-            awsCredentials: $(AWS_SERVICE_CONNECTION)
+            awsCredentials: 'manar'
             regionName: $(AWS_REGION)
             scriptType: inline
             inlineScript: |
@@ -54,39 +63,54 @@ stages:
               cd "$(TF_DIR)"
               terraform init -input=false
 
+        # Terraform plan (normal)
         - task: AWSShellScript@1
           displayName: Terraform plan
           condition: eq('${{ parameters.destroy }}', false)
           inputs:
-            awsCredentials: $(AWS_SERVICE_CONNECTION)
+            awsCredentials: 'manar'
             regionName: $(AWS_REGION)
             scriptType: inline
             inlineScript: |
               set -euo pipefail
               cd "$(TF_DIR)"
+              if [[ ! -f "$(TF_VAR_FILE)" ]]; then
+                echo "❌ Variables file '$(TF_VAR_FILE)' not found"
+                exit 1
+              fi
               terraform plan -out=tfplan -input=false -var-file="$(TF_VAR_FILE)"
 
+        # Terraform plan (destroy)
         - task: AWSShellScript@1
           displayName: Terraform plan -destroy
           condition: eq('${{ parameters.destroy }}', true)
           inputs:
-            awsCredentials: $(AWS_SERVICE_CONNECTION)
+            awsCredentials: 'manar'
             regionName: $(AWS_REGION)
             scriptType: inline
             inlineScript: |
               set -euo pipefail
               cd "$(TF_DIR)"
+              if [[ ! -f "$(TF_VAR_FILE)" ]]; then
+                echo "❌ Variables file '$(TF_VAR_FILE)' not found"
+                exit 1
+              fi
               terraform plan -destroy -out=tfplan -input=false -var-file="$(TF_VAR_FILE)"
 
+        # Terraform apply
         - task: AWSShellScript@1
           displayName: Terraform apply
           inputs:
-            awsCredentials: $(AWS_SERVICE_CONNECTION)
+            awsCredentials: 'manar'
             regionName: $(AWS_REGION)
             scriptType: inline
             inlineScript: |
               set -euo pipefail
               cd "$(TF_DIR)"
+              if [[ ! -f "tfplan" ]]; then
+                echo "❌ Terraform plan 'tfplan' not found"
+                exit 1
+              fi
               terraform apply -auto-approve -input=false tfplan
 
 # =========================
@@ -102,32 +126,37 @@ stages:
       steps:
         - checkout: self
 
+        # Install Kubectl & Helm
         - task: KubectlInstaller@0
           inputs:
             versionSpec: 'latest'
-
         - task: HelmInstaller@1
           inputs:
             helmVersionToInstall: 'latest'
 
+        # Configure kubeconfig from Service Connection
         - task: AWSShellScript@1
           displayName: Configure kubeconfig
           inputs:
-            awsCredentials: $(AWS_SERVICE_CONNECTION)
+            awsCredentials: 'manar'
             regionName: $(AWS_REGION)
             scriptType: inline
             inlineScript: |
               set -euo pipefail
               aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION)
 
+        # Create Service Account for ALB Controller
         - script: |
             kubectl create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
             kubectl create serviceaccount $(SERVICE_ACCOUNT) -n $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
             kubectl annotate serviceaccount $(SERVICE_ACCOUNT) \
-            eks.amazonaws.com/role-arn=$(aws iam get-role --role-name $(CLUSTER_NAME)-alb-controller-role --query Role.Arn --output text) \
-            -n $(HELM_NAMESPACE) --overwrite
+              eks.amazonaws.com/role-arn=$(aws iam get-role --role-name $(CLUSTER_NAME)-alb-controller-role --query Role.Arn --output text) \
+              -n $(HELM_NAMESPACE) --overwrite
           displayName: "Create Service Account (IRSA)"
+          env:
+            AWS_REGION: $(AWS_REGION)
 
+        # Install ALB Controller using Helm
         - script: |
             helm repo add eks https://aws.github.io/eks-charts
             helm repo update
@@ -137,6 +166,8 @@ stages:
               --set serviceAccount.create=false \
               --set serviceAccount.name=$(SERVICE_ACCOUNT)
           displayName: "Install ALB Controller"
+          env:
+            AWS_REGION: $(AWS_REGION)
 
 # =========================
 # 3️⃣ Deploy App Stage
@@ -155,16 +186,20 @@ stages:
           inputs:
             versionSpec: 'latest'
 
+        # Configure kubeconfig
         - task: AWSShellScript@1
           displayName: Configure kubeconfig
           inputs:
-            awsCredentials: $(AWS_SERVICE_CONNECTION)
+            awsCredentials: 'manar'
             regionName: $(AWS_REGION)
             scriptType: inline
             inlineScript: |
               set -euo pipefail
               aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION)
 
+        # Deploy App + Ingress
         - script: |
             kubectl apply -f $(APP_DIR)/
           displayName: "Deploy App + Ingress"
+          env:
+            AWS_REGION: $(AWS_REGION)
