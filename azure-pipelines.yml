@@ -132,17 +132,54 @@ stages:
           inputs:
             helmVersionToInstall: 'latest'
 
-        # Configure kubeconfig using Service Connection
+        # Configure kubeconfig using exec block
         - task: AWSShellScript@1
-          displayName: Configure kubeconfig
+          displayName: Configure kubeconfig (exec block)
           inputs:
             awsCredentials: 'manar'
             regionName: $(AWS_REGION)
             scriptType: inline
             inlineScript: |
-              aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION)
+              set -euo pipefail
 
-        # Create Service Account (IRSA) for ALB Controller
+              CLUSTER_NAME=$(CLUSTER_NAME)
+              AWS_REGION=$(AWS_REGION)
+
+              ENDPOINT=$(aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION --query "cluster.endpoint" --output text)
+              CERT_DATA=$(aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION --query "cluster.certificateAuthority.data" --output text)
+
+              mkdir -p $HOME/.kube
+              cat > $HOME/.kube/config <<EOF
+apiVersion: v1
+clusters:
+- cluster:
+    server: $ENDPOINT
+    certificate-authority-data: $CERT_DATA
+  name: $CLUSTER_NAME
+contexts:
+- context:
+    cluster: $CLUSTER_NAME
+    user: $CLUSTER_NAME
+  name: $CLUSTER_NAME
+current-context: $CLUSTER_NAME
+kind: Config
+preferences: {}
+users:
+- name: $CLUSTER_NAME
+  user:
+    exec:
+      apiVersion: client.authentication.k8s.io/v1alpha1
+      command: aws
+      args:
+        - "eks"
+        - "get-token"
+        - "--cluster-name"
+        - "$CLUSTER_NAME"
+        - "--region"
+        - "$AWS_REGION"
+EOF
+
+        # Create Service Account (IRSA)
         - task: AWSShellScript@1
           displayName: "Create Service Account (IRSA)"
           inputs:
@@ -189,15 +226,52 @@ stages:
           inputs:
             versionSpec: 'latest'
 
-        # Configure kubeconfig
+        # Configure kubeconfig using exec block
         - task: AWSShellScript@1
-          displayName: Configure kubeconfig
+          displayName: Configure kubeconfig (exec block)
           inputs:
             awsCredentials: 'manar'
             regionName: $(AWS_REGION)
             scriptType: inline
             inlineScript: |
-              aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION)
+              set -euo pipefail
+
+              CLUSTER_NAME=$(CLUSTER_NAME)
+              AWS_REGION=$(AWS_REGION)
+
+              ENDPOINT=$(aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION --query "cluster.endpoint" --output text)
+              CERT_DATA=$(aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION --query "cluster.certificateAuthority.data" --output text)
+
+              mkdir -p $HOME/.kube
+              cat > $HOME/.kube/config <<EOF
+apiVersion: v1
+clusters:
+- cluster:
+    server: $ENDPOINT
+    certificate-authority-data: $CERT_DATA
+  name: $CLUSTER_NAME
+contexts:
+- context:
+    cluster: $CLUSTER_NAME
+    user: $CLUSTER_NAME
+  name: $CLUSTER_NAME
+current-context: $CLUSTER_NAME
+kind: Config
+preferences: {}
+users:
+- name: $CLUSTER_NAME
+  user:
+    exec:
+      apiVersion: client.authentication.k8s.io/v1alpha1
+      command: aws
+      args:
+        - "eks"
+        - "get-token"
+        - "--cluster-name"
+        - "$CLUSTER_NAME"
+        - "--region"
+        - "$AWS_REGION"
+EOF
 
         # Deploy App + Ingress
         - task: AWSShellScript@1
