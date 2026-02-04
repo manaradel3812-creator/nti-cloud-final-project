@@ -25,7 +25,7 @@ stages:
       - job: Terraform
         displayName: "Terraform Execution"
         pool:
-          vmImage: ubuntu-latest # أو aws-self-hosted حسب إعدادات الـ Agent عندك
+          vmImage: ubuntu-latest
         steps:
           - checkout: self
 
@@ -34,7 +34,7 @@ stages:
             inputs:
               terraformVersion: latest
 
-          # 1️⃣ Terraform Init
+          # 1️⃣ Init: تحميل المكتبات
           - task: AWSShellScript@1
             displayName: "Terraform Init"
             inputs:
@@ -46,10 +46,9 @@ stages:
                 cd "$(TF_DIR)"
                 terraform init -input=false
 
-          # 2️⃣ Terraform Plan (Normal)
+          # 2️⃣ Plan: هنا بيظهر خطأ "enable_irsa" لو لسه موجود في الكود
           - task: AWSShellScript@1
             displayName: "Terraform Plan"
-            condition: eq('${{ parameters.destroy }}', false)
             inputs:
               awsCredentials: $(AWS_SERVICE_CONNECTION)
               regionName: $(AWS_REGION)
@@ -57,22 +56,13 @@ stages:
               inlineScript: |
                 set -euo pipefail
                 cd "$(TF_DIR)"
-                terraform plan -out=tfplan -input=false -var-file="$(TF_VAR_FILE)"
+                # لو parameters.destroy بـ true هيعمل plan للمسح، ولو false هيعمل plan للإنشاء
+                ACTION_FLAG=""
+                if [ "${{ parameters.destroy }}" = "true" ]; then ACTION_FLAG="-destroy"; fi
+                
+                terraform plan $ACTION_FLAG -out=tfplan -input=false -var-file="$(TF_VAR_FILE)"
 
-          # 3️⃣ Terraform Plan (Destroy)
-          - task: AWSShellScript@1
-            displayName: "Terraform Plan - Destroy"
-            condition: eq('${{ parameters.destroy }}', true)
-            inputs:
-              awsCredentials: $(AWS_SERVICE_CONNECTION)
-              regionName: $(AWS_REGION)
-              scriptType: inline
-              inlineScript: |
-                set -euo pipefail
-                cd "$(TF_DIR)"
-                terraform plan -destroy -out=tfplan -input=false -var-file="$(TF_VAR_FILE)"
-
-          # 4️⃣ Terraform Apply
+          # 3️⃣ Apply: تنفيذ ما تم تخطيطه
           - task: AWSShellScript@1
             displayName: "Terraform Apply"
             inputs:
@@ -82,5 +72,5 @@ stages:
               inlineScript: |
                 set -euo pipefail
                 cd "$(TF_DIR)"
-                # سيقوم بتطبيق الخطة سواء كانت Apply أو Destroy بناءً على ملف tfplan
+                # التنفيذ بيعتمد فقط على ملف الـ tfplan الناتج من الخطوة اللي فاتت
                 terraform apply -auto-approve -input=false tfplan
