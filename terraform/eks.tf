@@ -1,44 +1,44 @@
-# 1. إنشاء الـ EKS Cluster Control Plane
+# =====================================
+# EKS Cluster
+# =====================================
 resource "aws_eks_cluster" "main" {
   name     = var.cluster_name
   role_arn = aws_iam_role.eks_cluster_role.arn
 
   vpc_config {
-    # هنا Terraform بيستخدم الـ Data Source اللي عملناه عشان يجيب الـ Private Subnets
-    subnet_ids = data.aws_subnets.private.ids
-    
-    # للأمان، بنخلي الوصول للـ API بتاع الـ Cluster خاص وعام معاً
+    subnet_ids             = data.aws_subnets.private.ids
     endpoint_private_access = true
     endpoint_public_access  = true
   }
+
+  enable_irsa = true  # ✅ يضمن إنشاء OIDC Provider تلقائياً
 
   depends_on = [
     aws_iam_role_policy_attachment.eks_policy
   ]
 }
 
-# 2. إنشاء الـ Node Group (الأجهزة اللي هتشغل الـ Containers)
+# =====================================
+# Node Group
+# =====================================
 resource "aws_eks_node_group" "main" {
   cluster_name    = aws_eks_cluster.main.name
   node_group_name = "managed-nodes"
   node_role_arn   = aws_iam_role.eks_nodes_role.arn
-  
-  # الـ Nodes لازم تكون في الـ Private Subnets
   subnet_ids      = data.aws_subnets.private.ids
 
   scaling_config {
-    desired_size = 2 # هيبدأ بـ 2 Nodes
+    desired_size = 2
     max_size     = 3
     min_size     = 1
   }
 
+  instance_types = ["t3.small"]
+  capacity_type  = "ON_DEMAND"
+
   update_config {
     max_unavailable = 1
   }
-
-  instance_types = ["t3.small"] # حجم مناسب جداً للـ Testing والـ Argo CD
-
-  capacity_type = "ON_DEMAND"
 
   depends_on = [
     aws_iam_role_policy_attachment.nodes_AmazonEKSWorkerNodePolicy,
@@ -46,11 +46,14 @@ resource "aws_eks_node_group" "main" {
     aws_iam_role_policy_attachment.nodes_AmazonEC2ContainerRegistryReadOnly,
   ]
 }
+
+# =====================================
 # Fargate Profile
+# =====================================
 resource "aws_eks_fargate_profile" "default" {
   cluster_name           = aws_eks_cluster.main.name
   fargate_profile_name   = "default"
-  pod_execution_role_arn = aws_iam_role.eks_fargate_role.arn  # <- هنا غير الدور
+  pod_execution_role_arn = aws_iam_role.eks_fargate_role.arn
   subnet_ids             = data.aws_subnets.private.ids
 
   selector {
@@ -59,4 +62,3 @@ resource "aws_eks_fargate_profile" "default" {
 
   depends_on = [aws_eks_cluster.main]
 }
-
