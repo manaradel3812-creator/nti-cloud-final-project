@@ -14,7 +14,7 @@ parameters:
     default: false
 
 variables:
-  TF_DIR: terraform                 # ✅ Terraform folder
+  TF_DIR: terraform
   TF_VAR_FILE: '${{ parameters.env }}.tfvars'
   AWS_REGION: us-east-1
   CLUSTER_NAME: 'nonprod-eks-cluster'
@@ -43,13 +43,15 @@ stages:
           inputs:
             terraformVersion: latest
 
-        # Use AWS Service Connection 'manar' for credentials
-        - task: AWSCLI@1
+        # Check AWS identity using Service Connection
+        - task: AWSShellScript@1
           displayName: "Check AWS Credentials"
           inputs:
             awsCredentials: 'manar'
             regionName: $(AWS_REGION)
-            command: 'sts get-caller-identity'
+            scriptType: inline
+            inlineScript: |
+              aws sts get-caller-identity
 
         # Terraform init
         - task: AWSShellScript@1
@@ -59,7 +61,6 @@ stages:
             regionName: $(AWS_REGION)
             scriptType: inline
             inlineScript: |
-              set -euo pipefail
               cd "$(TF_DIR)"
               terraform init -input=false
 
@@ -72,7 +73,6 @@ stages:
             regionName: $(AWS_REGION)
             scriptType: inline
             inlineScript: |
-              set -euo pipefail
               cd "$(TF_DIR)"
               if [[ ! -f "$(TF_VAR_FILE)" ]]; then
                 echo "❌ Variables file '$(TF_VAR_FILE)' not found"
@@ -89,7 +89,6 @@ stages:
             regionName: $(AWS_REGION)
             scriptType: inline
             inlineScript: |
-              set -euo pipefail
               cd "$(TF_DIR)"
               if [[ ! -f "$(TF_VAR_FILE)" ]]; then
                 echo "❌ Variables file '$(TF_VAR_FILE)' not found"
@@ -105,7 +104,6 @@ stages:
             regionName: $(AWS_REGION)
             scriptType: inline
             inlineScript: |
-              set -euo pipefail
               cd "$(TF_DIR)"
               if [[ ! -f "tfplan" ]]; then
                 echo "❌ Terraform plan 'tfplan' not found"
@@ -134,7 +132,7 @@ stages:
           inputs:
             helmVersionToInstall: 'latest'
 
-        # Configure kubeconfig from Service Connection
+        # Configure kubeconfig using Service Connection
         - task: AWSShellScript@1
           displayName: Configure kubeconfig
           inputs:
@@ -142,32 +140,37 @@ stages:
             regionName: $(AWS_REGION)
             scriptType: inline
             inlineScript: |
-              set -euo pipefail
               aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION)
 
-        # Create Service Account for ALB Controller
-        - script: |
-            kubectl create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
-            kubectl create serviceaccount $(SERVICE_ACCOUNT) -n $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
-            kubectl annotate serviceaccount $(SERVICE_ACCOUNT) \
-              eks.amazonaws.com/role-arn=$(aws iam get-role --role-name $(CLUSTER_NAME)-alb-controller-role --query Role.Arn --output text) \
-              -n $(HELM_NAMESPACE) --overwrite
+        # Create Service Account (IRSA) for ALB Controller
+        - task: AWSShellScript@1
           displayName: "Create Service Account (IRSA)"
-          env:
-            AWS_REGION: $(AWS_REGION)
+          inputs:
+            awsCredentials: 'manar'
+            regionName: $(AWS_REGION)
+            scriptType: inline
+            inlineScript: |
+              kubectl create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+              kubectl create serviceaccount $(SERVICE_ACCOUNT) -n $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+              kubectl annotate serviceaccount $(SERVICE_ACCOUNT) \
+                eks.amazonaws.com/role-arn=$(aws iam get-role --role-name $(CLUSTER_NAME)-alb-controller-role --query Role.Arn --output text) \
+                -n $(HELM_NAMESPACE) --overwrite
 
         # Install ALB Controller using Helm
-        - script: |
-            helm repo add eks https://aws.github.io/eks-charts
-            helm repo update
-            helm upgrade --install $(HELM_RELEASE) eks/aws-load-balancer-controller \
-              -n $(HELM_NAMESPACE) \
-              --set clusterName=$(CLUSTER_NAME) \
-              --set serviceAccount.create=false \
-              --set serviceAccount.name=$(SERVICE_ACCOUNT)
+        - task: AWSShellScript@1
           displayName: "Install ALB Controller"
-          env:
-            AWS_REGION: $(AWS_REGION)
+          inputs:
+            awsCredentials: 'manar'
+            regionName: $(AWS_REGION)
+            scriptType: inline
+            inlineScript: |
+              helm repo add eks https://aws.github.io/eks-charts
+              helm repo update
+              helm upgrade --install $(HELM_RELEASE) eks/aws-load-balancer-controller \
+                -n $(HELM_NAMESPACE) \
+                --set clusterName=$(CLUSTER_NAME) \
+                --set serviceAccount.create=false \
+                --set serviceAccount.name=$(SERVICE_ACCOUNT)
 
 # =========================
 # 3️⃣ Deploy App Stage
@@ -194,12 +197,14 @@ stages:
             regionName: $(AWS_REGION)
             scriptType: inline
             inlineScript: |
-              set -euo pipefail
               aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION)
 
         # Deploy App + Ingress
-        - script: |
-            kubectl apply -f $(APP_DIR)/
+        - task: AWSShellScript@1
           displayName: "Deploy App + Ingress"
-          env:
-            AWS_REGION: $(AWS_REGION)
+          inputs:
+            awsCredentials: 'manar'
+            regionName: $(AWS_REGION)
+            scriptType: inline
+            inlineScript: |
+              kubectl apply -f $(APP_DIR)/
