@@ -14,8 +14,7 @@ parameters:
 
 variables:
   AWS_REGION: us-east-1
-  INFRA_CONNECTION: manar    # الـ Service Connection الأول للـ Terraform
-  HELM_CONNECTION: manarr     # الـ Service Connection الثاني للـ Helm/App
+  INFRA_CONNECTION: manar    # سنبقي عليه للمرحلة الأولى فقط لأن Terraform يتعامل معه جيداً
   TF_DIR: terraform
   TF_VAR_FILE: '${{ parameters.env }}.tfvars'
   CLUSTER_NAME: '${{ parameters.env }}-eks-cluster'
@@ -26,27 +25,24 @@ variables:
 stages:
 
 #################################
-# 1️⃣ Stage: Terraform Infra (Using manar)
+# 1️⃣ Stage: Terraform (تستخدم manar)
 #################################
 - stage: Infra
   displayName: "Infrastructure Deployment"
   jobs:
   - job: Terraform
-    pool:
-      vmImage: ubuntu-latest
+    pool: { vmImage: ubuntu-latest }
     steps:
     - checkout: self
     - task: TerraformInstaller@1
       inputs: { terraformVersion: latest }
-
     - task: AWSShellScript@1
-      displayName: "Run Terraform with manar"
+      displayName: "Run Terraform"
       inputs:
         awsCredentials: $(INFRA_CONNECTION)
         regionName: $(AWS_REGION)
         scriptType: inline
         inlineScript: |
-          set -euo pipefail
           cd $(TF_DIR)
           terraform init -input=false
           if [ "${{ parameters.destroy }}" = "true" ]; then
@@ -56,7 +52,7 @@ stages:
           fi
 
 #################################
-# 2️⃣ Stage: Platform & App (Using manarr)
+# 2️⃣ Stage: Platform (تستخدم الـ Secrets يدوياً)
 #################################
 - stage: Platform
   displayName: "Kubernetes Platform Setup"
@@ -64,8 +60,7 @@ stages:
   condition: and(succeeded(), eq('${{ parameters.destroy }}', false))
   jobs:
   - job: Helm
-    pool:
-      vmImage: ubuntu-latest
+    pool: { vmImage: ubuntu-latest }
     steps:
     - checkout: self
     - task: KubectlInstaller@0
@@ -73,48 +68,44 @@ stages:
     - task: HelmInstaller@1
       inputs: { helmVersionToInstall: latest }
 
-    # ✅ الخطوة الأهم: استخدام manarr لبناء ملف الصلاحيات يدوياً
-    - task: AWSShellScript@1
-      displayName: "Configure AWS Profile with manarr"
-      inputs:
-        awsCredentials: $(HELM_CONNECTION)
-        regionName: $(AWS_REGION)
-        scriptType: inline
-        inlineScript: |
-          set -euo pipefail
-          mkdir -p ~/.aws
-          echo "[default]" > ~/.aws/credentials
-          echo "aws_access_key_id = $AWS_ACCESS_KEY_ID" >> ~/.aws/credentials
-          echo "aws_secret_access_key = $AWS_SECRET_ACCESS_KEY" >> ~/.aws/credentials
-          if [ -n "${AWS_SESSION_TOKEN:-}" ]; then
-            echo "aws_session_token = $AWS_SESSION_TOKEN" >> ~/.aws/credentials
-          fi
-          
-          echo "🔐 Updating Kubeconfig..."
-          aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION) --kubeconfig $(KUBECONFIG_PATH)
-          
-          echo "✅ AWS CLI & Kubeconfig are ready."
-
-    # تنفيذ أوامر Kubernetes و Helm
     - script: |
         set -euo pipefail
-        export KUBECONFIG=$(KUBECONFIG_PATH)
         
-        echo "🔍 Testing Connection..."
+        echo "🛠️ Creating physical AWS credentials file..."
+        mkdir -p ~/.aws
+        
+        # كتابة ملف الصلاحيات يدوياً من المتغيرات السرية التي قمتِ بتعريفها في الـ UI
+        cat <<EOF > ~/.aws/credentials
+        [default]
+        aws_access_key_id = $(MY_AWS_ACCESS_KEY)
+        aws_secret_access_key = $(MY_AWS_SECRET_KEY)
+        EOF
+
+        cat <<EOF > ~/.aws/config
+        [default]
+        region = $(AWS_REGION)
+        output = json
+        EOF
+        
+        chmod 600 ~/.aws/credentials
+        
+        # إعداد ملف الـ Kubeconfig
+        export KUBECONFIG=$(KUBECONFIG_PATH)
+        echo "🔐 Updating Kubeconfig..."
+        aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION) --kubeconfig $KUBECONFIG
+
+        echo "🔍 TESTING CONNECTION..."
+        # هذا السطر سيعمل الآن لأن aws cli سيجد ملف ~/.aws/credentials
         kubectl get nodes
 
-        echo "🛠️ Creating IRSA & Namespace..."
+        echo "🛠️ Deploying IRSA & Namespace..."
         kubectl create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
         kubectl create serviceaccount $(SERVICE_ACCOUNT) -n $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
 
-        # جلب الـ Role ARN باستخدام الملف اللي كريتناه فوق
         ROLE_ARN=$(aws iam get-role --role-name $(CLUSTER_NAME)-alb-controller-role --query Role.Arn --output text)
-        
-        kubectl annotate serviceaccount $(SERVICE_ACCOUNT) \
-          eks.amazonaws.com/role-arn=$ROLE_ARN \
-          -n $(HELM_NAMESPACE) --overwrite
+        kubectl annotate serviceaccount $(SERVICE_ACCOUNT) eks.amazonaws.com/role-arn=$ROLE_ARN -n $(HELM_NAMESPACE) --overwrite
 
-        echo "📦 Installing Helm Charts..."
+        echo "📦 Installing AWS Load Balancer Controller..."
         helm repo add eks https://aws.github.io/eks-charts
         helm repo update
         
@@ -128,11 +119,15 @@ stages:
           --set serviceAccount.create=false \
           --set serviceAccount.name=$(SERVICE_ACCOUNT)
 
-        # تثبيت الأدوات الإضافية
+        echo "🚀 Installing ArgoCD & Cert-Manager..."
         helm repo add jetstack https://charts.jetstack.io
         helm repo add argo https://argoproj.github.io/argo-helm
         helm repo update
         
         helm upgrade --install cert-manager jetstack/cert-manager -n cert-manager --create-namespace --set installCRDs=true
         helm upgrade --install argocd argo/argo-cd -n argocd --create-namespace
-      displayName: "Install Platform Components"
+      displayName: "Manual Credential Injection & Deploy"
+      env:
+        # ربط الـ Secrets بالبيئة (مهم جداً)
+        MY_AWS_ACCESS_KEY: $(MY_AWS_ACCESS_KEY)
+        MY_AWS_SECRET_KEY: $(MY_AWS_SECRET_KEY)
