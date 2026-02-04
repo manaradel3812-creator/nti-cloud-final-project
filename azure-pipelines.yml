@@ -22,6 +22,7 @@ variables:
   SERVICE_ACCOUNT: 'aws-load-balancer-controller'
   HELM_RELEASE: 'aws-load-balancer-controller'
   APP_DIR: k8s/hello-manar
+  AWS_SERVICE_CONNECTION: manar  # ✅ تعريف Service Connection هنا
 
 stages:
 
@@ -42,33 +43,33 @@ stages:
           inputs:
             terraformVersion: latest
 
-        # Check AWS credentials from Service Connection
+        # ✅ Check AWS identity using Service Connection
         - task: AWSShellScript@1
           displayName: "Check AWS Credentials"
           inputs:
-            awsCredentials: 'manar'
+            awsCredentials: $(AWS_SERVICE_CONNECTION)
             regionName: $(AWS_REGION)
             scriptType: inline
             inlineScript: |
               aws sts get-caller-identity
 
-        # Terraform init
+        # ✅ Terraform init
         - task: AWSShellScript@1
           displayName: Terraform init
           inputs:
-            awsCredentials: 'manar'
+            awsCredentials: $(AWS_SERVICE_CONNECTION)
             regionName: $(AWS_REGION)
             scriptType: inline
             inlineScript: |
               cd "$(TF_DIR)"
               terraform init -input=false
 
-        # Terraform plan (apply)
+        # ✅ Terraform plan (apply)
         - task: AWSShellScript@1
           displayName: Terraform plan
           condition: eq('${{ parameters.destroy }}', false)
           inputs:
-            awsCredentials: 'manar'
+            awsCredentials: $(AWS_SERVICE_CONNECTION)
             regionName: $(AWS_REGION)
             scriptType: inline
             inlineScript: |
@@ -79,12 +80,12 @@ stages:
               fi
               terraform plan -out=tfplan -input=false -var-file="$(TF_VAR_FILE)"
 
-        # Terraform plan (destroy)
+        # ✅ Terraform plan (destroy)
         - task: AWSShellScript@1
           displayName: Terraform plan -destroy
           condition: eq('${{ parameters.destroy }}', true)
           inputs:
-            awsCredentials: 'manar'
+            awsCredentials: $(AWS_SERVICE_CONNECTION)
             regionName: $(AWS_REGION)
             scriptType: inline
             inlineScript: |
@@ -95,11 +96,11 @@ stages:
               fi
               terraform plan -destroy -out=tfplan -input=false -var-file="$(TF_VAR_FILE)"
 
-        # Terraform apply
+        # ✅ Terraform apply
         - task: AWSShellScript@1
           displayName: Terraform apply
           inputs:
-            awsCredentials: 'manar'
+            awsCredentials: $(AWS_SERVICE_CONNECTION)
             regionName: $(AWS_REGION)
             scriptType: inline
             inlineScript: |
@@ -130,35 +131,37 @@ stages:
           inputs:
             helmVersionToInstall: 'latest'
 
-        # Generate kubeconfig using Service Connection
+        # ✅ Configure kubeconfig using Service Connection
         - task: AWSShellScript@1
           displayName: Configure kubeconfig
           inputs:
-            awsCredentials: 'manar'
+            awsCredentials: $(AWS_SERVICE_CONNECTION)
             regionName: $(AWS_REGION)
             scriptType: inline
             inlineScript: |
               aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION)
 
-        # Create Service Account (IRSA) for ALB Controller
+        # ✅ Create Service Account (IRSA) for ALB Controller
         - task: AWSShellScript@1
           displayName: "Create Service Account (IRSA)"
           inputs:
-            awsCredentials: 'manar'
+            awsCredentials: $(AWS_SERVICE_CONNECTION)
             regionName: $(AWS_REGION)
             scriptType: inline
             inlineScript: |
+              set -euo pipefail
               kubectl create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
               kubectl create serviceaccount $(SERVICE_ACCOUNT) -n $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+              ROLE_ARN=$(aws iam get-role --role-name $(CLUSTER_NAME)-alb-controller-role --query Role.Arn --output text)
               kubectl annotate serviceaccount $(SERVICE_ACCOUNT) \
-                eks.amazonaws.com/role-arn=$(aws iam get-role --role-name $(CLUSTER_NAME)-alb-controller-role --query Role.Arn --output text) \
+                eks.amazonaws.com/role-arn=$ROLE_ARN \
                 -n $(HELM_NAMESPACE) --overwrite
 
-        # Install ALB Controller using Helm
+        # ✅ Install ALB Controller using Helm
         - task: AWSShellScript@1
           displayName: "Install ALB Controller"
           inputs:
-            awsCredentials: 'manar'
+            awsCredentials: $(AWS_SERVICE_CONNECTION)
             regionName: $(AWS_REGION)
             scriptType: inline
             inlineScript: |
@@ -187,21 +190,21 @@ stages:
           inputs:
             versionSpec: 'latest'
 
-        # Configure kubeconfig again using Service Connection
+        # ✅ Configure kubeconfig using Service Connection
         - task: AWSShellScript@1
           displayName: Configure kubeconfig
           inputs:
-            awsCredentials: 'manar'
+            awsCredentials: $(AWS_SERVICE_CONNECTION)
             regionName: $(AWS_REGION)
             scriptType: inline
             inlineScript: |
               aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION)
 
-        # Deploy App + Ingress
+        # ✅ Deploy App + Ingress
         - task: AWSShellScript@1
           displayName: "Deploy App + Ingress"
           inputs:
-            awsCredentials: 'manar'
+            awsCredentials: $(AWS_SERVICE_CONNECTION)
             regionName: $(AWS_REGION)
             scriptType: inline
             inlineScript: |
