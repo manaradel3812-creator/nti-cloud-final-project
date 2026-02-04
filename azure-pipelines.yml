@@ -7,154 +7,183 @@ parameters:
     type: string
     default: nonprod
     values: [nonprod, prod]
+
   - name: destroy
-    displayName: Destroy
+    displayName: Destroy Infra
     type: boolean
     default: false
 
 variables:
+  AWS_REGION: us-east-1
+  AWS_SERVICE_CONNECTION: manar
   TF_DIR: terraform
   TF_VAR_FILE: '${{ parameters.env }}.tfvars'
-  AWS_REGION: us-east-1
-  CLUSTER_NAME: 'nonprod-eks-cluster'
-  HELM_NAMESPACE: 'kube-system'
-  SERVICE_ACCOUNT: 'aws-load-balancer-controller'
-  HELM_RELEASE: 'aws-load-balancer-controller'
-  APP_DIR: k8s/hello-manar
-  AWS_SERVICE_CONNECTION: manar
-  # مسار موحد لملف الكوبنتيز لضمان الوصول إليه في كل Task
-  KUBECONFIG_PATH: $(Pipeline.Workspace)/kubeconfig.yaml
+  CLUSTER_NAME: '${{ parameters.env }}-eks-cluster'
 
+#################################
+# Stage 1: Terraform Infra
+#################################
 stages:
-
-# =========================
-# 1️⃣ Terraform Stage
-# =========================
 - stage: Infra
   displayName: Terraform Infra
   jobs:
-    - job: Terraform
-      pool:
-        vmImage: ubuntu-latest
-      steps:
-        - checkout: self
-        - task: TerraformInstaller@1
-          displayName: Install Terraform
-          inputs:
-            terraformVersion: latest
+  - job: Terraform
+    pool:
+      name: aws-self-hosted
+    steps:
+    - checkout: self
 
-        - task: AWSShellScript@1
-          displayName: "Terraform Run"
-          inputs:
-            awsCredentials: $(AWS_SERVICE_CONNECTION)
-            regionName: $(AWS_REGION)
-            scriptType: inline
-            inlineScript: |
-              set -e
-              cd "$(TF_DIR)"
-              terraform init -input=false
-              
-              if [ "${{ parameters.destroy }}" == "true" ]; then
-                echo "🔥 Destroying Infrastructure..."
-                terraform destroy -auto-approve -input=false -var-file="$(TF_VAR_FILE)"
-              else
-                echo "🚀 Applying Infrastructure..."
-                terraform apply -auto-approve -input=false -var-file="$(TF_VAR_FILE)"
-              fi
+    - task: TerraformInstaller@1
+      inputs:
+        terraformVersion: latest
 
-# =========================
-# 2️⃣ ALB Helm Stage
-# =========================
-- stage: ALB_Controller
+    - task: AWSShellScript@1
+      displayName: Terraform Init
+      inputs:
+        awsCredentials: $(AWS_SERVICE_CONNECTION)
+        regionName: $(AWS_REGION)
+        scriptType: inline
+        inlineScript: |
+          set -e
+          cd $(TF_DIR)
+          terraform init
+
+    - task: AWSShellScript@1
+      displayName: Terraform Plan
+      condition: eq('${{ parameters.destroy }}', false)
+      inputs:
+        awsCredentials: $(AWS_SERVICE_CONNECTION)
+        regionName: $(AWS_REGION)
+        scriptType: inline
+        inlineScript: |
+          set -e
+          cd $(TF_DIR)
+          terraform plan -out=tfplan -var-file=$(TF_VAR_FILE)
+
+    - task: AWSShellScript@1
+      displayName: Terraform Destroy Plan
+      condition: eq('${{ parameters.destroy }}', true)
+      inputs:
+        awsCredentials: $(AWS_SERVICE_CONNECTION)
+        regionName: $(AWS_REGION)
+        scriptType: inline
+        inlineScript: |
+          set -e
+          cd $(TF_DIR)
+          terraform plan -destroy -out=tfplan -var-file=$(TF_VAR_FILE)
+
+    - task: AWSShellScript@1
+      displayName: Terraform Apply
+      inputs:
+        awsCredentials: $(AWS_SERVICE_CONNECTION)
+        regionName: $(AWS_REGION)
+        scriptType: inline
+        inlineScript: |
+          set -e
+          cd $(TF_DIR)
+          terraform apply -auto-approve tfplan
+
+#################################
+# Stage 2: Platform / Helm
+#################################
+- stage: Platform
+  displayName: Platform & Helm
   dependsOn: Infra
-  condition: and(succeeded(), eq('${{ parameters.destroy }}', false))
-  displayName: Install ALB Controller
+  condition: succeeded('Infra')
   jobs:
-    - job: Helm_ALB
-      pool:
-        vmImage: ubuntu-latest
-      steps:
-        - checkout: self
-        - task: KubectlInstaller@0
-          inputs: { versionSpec: 'latest' }
-        - task: HelmInstaller@1
-          inputs: { helmVersionToInstall: 'latest' }
+  - job: Helm
+    pool:
+      name: aws-self-hosted
+    steps:
+    - checkout: self
 
-        - task: AWSShellScript@1
-          displayName: "Prepare Kubeconfig & IRSA"
-          inputs:
-            awsCredentials: $(AWS_SERVICE_CONNECTION)
-            regionName: $(AWS_REGION)
-            scriptType: inline
-            inlineScript: |
-              set -euo pipefail
-              
-              # تحديث ملف الكوبنتيز في مسار ثابت
-              aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION) --kubeconfig $(KUBECONFIG_PATH)
-              export KUBECONFIG=$(KUBECONFIG_PATH)
+    # 1️⃣ Setup kubeconfig + export AWS creds
+    - task: AWSShellScript@1
+      displayName: Setup EKS Access
+      name: setup
+      inputs:
+        awsCredentials: $(AWS_SERVICE_CONNECTION)
+        regionName: $(AWS_REGION)
+        scriptType: inline
+        inlineScript: |
+          set -euo pipefail
 
-              # إنشاء الـ Namespace والـ Service Account
-              kubectl create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
-              kubectl create serviceaccount $(SERVICE_ACCOUNT) -n $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
-              
-              # جلب الـ Role ARN من AWS وربطه بالـ Service Account
-              ROLE_ARN=$(aws iam get-role --role-name $(CLUSTER_NAME)-alb-controller-role --query Role.Arn --output text)
-              kubectl annotate serviceaccount $(SERVICE_ACCOUNT) \
-                eks.amazonaws.com/role-arn=$ROLE_ARN \
-                -n $(HELM_NAMESPACE) --overwrite
+          aws eks update-kubeconfig \
+            --name $(CLUSTER_NAME) \
+            --region $(AWS_REGION)
 
-        - task: AWSShellScript@1
-          displayName: "Install ALB Controller via Helm"
-          inputs:
-            awsCredentials: $(AWS_SERVICE_CONNECTION)
-            regionName: $(AWS_REGION)
-            scriptType: inline
-            inlineScript: |
-              set -euo pipefail
-              export KUBECONFIG=$(KUBECONFIG_PATH)
+          VPC_ID=$(aws eks describe-cluster \
+            --name $(CLUSTER_NAME) \
+            --query "cluster.resourcesVpcConfig.vpcId" \
+            --output text)
 
-              helm repo add eks https://aws.github.io/eks-charts
-              helm repo update
-              helm upgrade --install $(HELM_RELEASE) eks/aws-load-balancer-controller \
-                -n $(HELM_NAMESPACE) \
-                --set clusterName=$(CLUSTER_NAME) \
-                --set serviceAccount.create=false \
-                --set serviceAccount.name=$(SERVICE_ACCOUNT)
+          echo "##vso[task.setvariable variable=VPC_ID]$VPC_ID"
+          echo "##vso[task.setvariable variable=AWS_ACCESS_KEY_ID;issecret=true]$AWS_ACCESS_KEY_ID"
+          echo "##vso[task.setvariable variable=AWS_SECRET_ACCESS_KEY;issecret=true]$AWS_SECRET_ACCESS_KEY"
+          echo "##vso[task.setvariable variable=AWS_SESSION_TOKEN;issecret=true]${AWS_SESSION_TOKEN:-}"
 
-# =========================
-# 3️⃣ Deploy App Stage
-# =========================
-- stage: Deploy_App
-  dependsOn: ALB_Controller
-  condition: and(succeeded(), eq('${{ parameters.destroy }}', false))
-  displayName: Deploy Application
-  jobs:
-    - job: Deploy
-      pool:
-        vmImage: ubuntu-latest
-      steps:
-        - checkout: self
-        - task: KubectlInstaller@0
-          inputs: { versionSpec: 'latest' }
+    # 2️⃣ Helm repos
+    - task: Bash@3
+      displayName: Helm Repos
+      env:
+        AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
+        AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
+        AWS_SESSION_TOKEN: $(AWS_SESSION_TOKEN)
+        AWS_DEFAULT_REGION: $(AWS_REGION)
+      inputs:
+        targetType: inline
+        script: |
+          set -e
+          helm repo add eks https://aws.github.io/eks-charts
+          helm repo add jetstack https://charts.jetstack.io
+          helm repo add argo https://argoproj.github.io/argo-helm
+          helm repo add hashicorp https://helm.releases.hashicorp.com
+          helm repo add external-secrets https://charts.external-secrets.io
+          helm repo update
 
-        - task: AWSShellScript@1
-          displayName: "Update Kubeconfig & Apply Manifests"
-          inputs:
-            awsCredentials: $(AWS_SERVICE_CONNECTION)
-            regionName: $(AWS_REGION)
-            scriptType: inline
-            inlineScript: |
-              set -euo pipefail
-              
-              # تحديث التوثيق للـ Cluster في الـ Stage الجديدة
-              aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION) --kubeconfig $(KUBECONFIG_PATH)
-              export KUBECONFIG=$(KUBECONFIG_PATH)
+    # 3️⃣ AWS Load Balancer Controller
+    - task: HelmDeploy@0
+      displayName: Install AWS Load Balancer Controller
+      env:
+        AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
+        AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
+        AWS_SESSION_TOKEN: $(AWS_SESSION_TOKEN)
+        AWS_DEFAULT_REGION: $(AWS_REGION)
+      inputs:
+        connectionType: None
+        namespace: kube-system
+        command: upgrade
+        chartType: Name
+        chartName: eks/aws-load-balancer-controller
+        releaseName: aws-load-balancer-controller
+        install: true
+        arguments: >
+          --set clusterName=$(CLUSTER_NAME)
+          --set region=$(AWS_REGION)
+          --set vpcId=$(VPC_ID)
 
-              # تطبيق ملفات الـ Kubernetes (Deployment, Service, Ingress)
-              if [ -d "$(APP_DIR)" ]; then
-                echo "📦 Deploying manifests from $(APP_DIR)..."
-                kubectl apply -f $(APP_DIR)/
-              else
-                echo "❌ Directory $(APP_DIR) not found!"
-                exit 1
-              fi
+    # 4️⃣ cert-manager
+    - task: HelmDeploy@0
+      displayName: Install cert-manager
+      inputs:
+        connectionType: None
+        namespace: cert-manager
+        command: upgrade
+        chartType: Name
+        chartName: jetstack/cert-manager
+        releaseName: cert-manager
+        install: true
+        arguments: --create-namespace --set installCRDs=true
+
+    # 5️⃣ Argo CD
+    - task: HelmDeploy@0
+      displayName: Install Argo CD
+      inputs:
+        connectionType: None
+        namespace: argocd
+        command: upgrade
+        chartType: Name
+        chartName: argo/argo-cd
+        releaseName: argocd
+        install: true
+        arguments: --create-namespace
