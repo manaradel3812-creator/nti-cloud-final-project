@@ -5,7 +5,6 @@
 .terraform.lock.hcl
 
 # Sensitive variables
-*.tfvars
 .terraform/
 terraform.tfstate
 terraform.tfstate.backup
