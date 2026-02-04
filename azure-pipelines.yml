@@ -14,7 +14,8 @@ parameters:
 
 variables:
   AWS_REGION: us-east-1
-  AWS_SERVICE_CONNECTION: manar
+  INFRA_CONNECTION: manar    # الـ Service Connection الأول للـ Terraform
+  HELM_CONNECTION: manarr     # الـ Service Connection الثاني للـ Helm/App
   TF_DIR: terraform
   TF_VAR_FILE: '${{ parameters.env }}.tfvars'
   CLUSTER_NAME: '${{ parameters.env }}-eks-cluster'
@@ -25,7 +26,7 @@ variables:
 stages:
 
 #################################
-# 1️⃣ Stage: Terraform Infra
+# 1️⃣ Stage: Terraform Infra (Using manar)
 #################################
 - stage: Infra
   displayName: "Infrastructure Deployment"
@@ -39,9 +40,9 @@ stages:
       inputs: { terraformVersion: latest }
 
     - task: AWSShellScript@1
-      displayName: "Run Terraform"
+      displayName: "Run Terraform with manar"
       inputs:
-        awsCredentials: $(AWS_SERVICE_CONNECTION)
+        awsCredentials: $(INFRA_CONNECTION)
         regionName: $(AWS_REGION)
         scriptType: inline
         inlineScript: |
@@ -55,7 +56,7 @@ stages:
           fi
 
 #################################
-# 2️⃣ Stage: Platform / Helm
+# 2️⃣ Stage: Platform & App (Using manarr)
 #################################
 - stage: Platform
   displayName: "Kubernetes Platform Setup"
@@ -72,43 +73,48 @@ stages:
     - task: HelmInstaller@1
       inputs: { helmVersionToInstall: latest }
 
-    # ✅ التعديل الجوهري: استخراج المفاتيح وحقنها في الـ Shell Environment
+    # ✅ الخطوة الأهم: استخدام manarr لبناء ملف الصلاحيات يدوياً
     - task: AWSShellScript@1
-      displayName: "Inject AWS Secrets"
+      displayName: "Configure AWS Profile with manarr"
       inputs:
-        awsCredentials: $(AWS_SERVICE_CONNECTION)
+        awsCredentials: $(HELM_CONNECTION)
         regionName: $(AWS_REGION)
         scriptType: inline
         inlineScript: |
-          echo "##vso[task.setvariable variable=AWS_ACCESS_KEY_ID;issecret=true]$AWS_ACCESS_KEY_ID"
-          echo "##vso[task.setvariable variable=AWS_SECRET_ACCESS_KEY;issecret=true]$AWS_SECRET_ACCESS_KEY"
-          echo "##vso[task.setvariable variable=AWS_SESSION_TOKEN;issecret=true]${AWS_SESSION_TOKEN:-}"
+          set -euo pipefail
+          mkdir -p ~/.aws
+          echo "[default]" > ~/.aws/credentials
+          echo "aws_access_key_id = $AWS_ACCESS_KEY_ID" >> ~/.aws/credentials
+          echo "aws_secret_access_key = $AWS_SECRET_ACCESS_KEY" >> ~/.aws/credentials
+          if [ -n "${AWS_SESSION_TOKEN:-}" ]; then
+            echo "aws_session_token = $AWS_SESSION_TOKEN" >> ~/.aws/credentials
+          fi
+          
+          echo "🔐 Updating Kubeconfig..."
+          aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION) --kubeconfig $(KUBECONFIG_PATH)
+          
+          echo "✅ AWS CLI & Kubeconfig are ready."
 
-    # ✅ التعديل الثاني: استخدام Bash عادي يقرأ المتغيرات المحقونة
+    # تنفيذ أوامر Kubernetes و Helm
     - script: |
         set -euo pipefail
-        
         export KUBECONFIG=$(KUBECONFIG_PATH)
         
-        echo "🔐 Updating Kubeconfig..."
-        aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION) --kubeconfig $KUBECONFIG
-
-        echo "🔍 Verifying Connection..."
-        # هذا السطر كان يفشل بـ 253، الآن سيجد المفاتيح في الـ Env
+        echo "🔍 Testing Connection..."
         kubectl get nodes
 
-        echo "🛠️ Configuring IRSA..."
+        echo "🛠️ Creating IRSA & Namespace..."
         kubectl create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
         kubectl create serviceaccount $(SERVICE_ACCOUNT) -n $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
 
-        echo "📡 Fetching Role ARN..."
+        # جلب الـ Role ARN باستخدام الملف اللي كريتناه فوق
         ROLE_ARN=$(aws iam get-role --role-name $(CLUSTER_NAME)-alb-controller-role --query Role.Arn --output text)
         
         kubectl annotate serviceaccount $(SERVICE_ACCOUNT) \
           eks.amazonaws.com/role-arn=$ROLE_ARN \
           -n $(HELM_NAMESPACE) --overwrite
 
-        echo "📦 Installing AWS Load Balancer Controller..."
+        echo "📦 Installing Helm Charts..."
         helm repo add eks https://aws.github.io/eks-charts
         helm repo update
         
@@ -120,19 +126,13 @@ stages:
           --set region=$(AWS_REGION) \
           --set vpcId=$VPC_ID \
           --set serviceAccount.create=false \
-          --set serviceAccount.name=$(SERVICE_ACCOUNT) \
-          --wait --timeout 300s
+          --set serviceAccount.name=$(SERVICE_ACCOUNT)
 
-        echo "🚀 Installing Platform Tools..."
+        # تثبيت الأدوات الإضافية
         helm repo add jetstack https://charts.jetstack.io
         helm repo add argo https://argoproj.github.io/argo-helm
         helm repo update
         
         helm upgrade --install cert-manager jetstack/cert-manager -n cert-manager --create-namespace --set installCRDs=true
         helm upgrade --install argocd argo/argo-cd -n argocd --create-namespace
-      displayName: "Deploy Helm Charts"
-      env:
-        # ربط المتغيرات التي تم حقنها بالسكربت
-        AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
-        AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
-        AWS_SESSION_TOKEN: $(AWS_SESSION_TOKEN)
+      displayName: "Install Platform Components"
