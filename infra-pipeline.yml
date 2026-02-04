@@ -17,26 +17,32 @@ variables:
   TF_VAR_FILE: '${{ parameters.env }}.tfvars'
   AWS_SERVICE_CONNECTION: manar
   AWS_REGION: us-east-1
+  CLUSTER_NAME: '${{ parameters.env }}-eks-cluster'
 
 stages:
   - stage: Infra
-    displayName: "Infra (Terraform)"
+    displayName: "Infra (Terraform + OIDC)"
     jobs:
       - job: Terraform
-        displayName: "Terraform Execution"
+        displayName: "Terraform & Post-Config"
         pool:
           vmImage: ubuntu-latest
         steps:
           - checkout: self
 
           - task: TerraformInstaller@1
-            displayName: "Install Terraform"
-            inputs:
-              terraformVersion: latest
+            inputs: { terraformVersion: latest }
 
-          # 1️⃣ Init: تحميل المكتبات
+          # 1️⃣ تنظيف الكود من السطر المسبب للخطأ
+          - bash: |
+              cd "$(TF_DIR)"
+              echo "🧹 Cleaning up unsupported arguments..."
+              sed -i '/enable_irsa/d' *.tf
+            displayName: "Pre-processing: Clean Terraform Code"
+
+          # 2️⃣ تشغيل Terraform (Init -> Plan -> Apply)
           - task: AWSShellScript@1
-            displayName: "Terraform Init"
+            displayName: "Terraform Execution"
             inputs:
               awsCredentials: $(AWS_SERVICE_CONNECTION)
               regionName: $(AWS_REGION)
@@ -44,33 +50,32 @@ stages:
               inlineScript: |
                 set -euo pipefail
                 cd "$(TF_DIR)"
+                
                 terraform init -input=false
-
-          # 2️⃣ Plan: هنا بيظهر خطأ "enable_irsa" لو لسه موجود في الكود
-          - task: AWSShellScript@1
-            displayName: "Terraform Plan"
-            inputs:
-              awsCredentials: $(AWS_SERVICE_CONNECTION)
-              regionName: $(AWS_REGION)
-              scriptType: inline
-              inlineScript: |
-                set -euo pipefail
-                cd "$(TF_DIR)"
-                # لو parameters.destroy بـ true هيعمل plan للمسح، ولو false هيعمل plan للإنشاء
+                
                 ACTION_FLAG=""
                 if [ "${{ parameters.destroy }}" = "true" ]; then ACTION_FLAG="-destroy"; fi
                 
                 terraform plan $ACTION_FLAG -out=tfplan -input=false -var-file="$(TF_VAR_FILE)"
+                terraform apply -auto-approve -input=false tfplan
 
-          # 3️⃣ Apply: تنفيذ ما تم تخطيطه
+          # 3️⃣ تفعيل الـ OIDC Provider (البديل اليدوي لـ enable_irsa)
           - task: AWSShellScript@1
-            displayName: "Terraform Apply"
+            displayName: "Enable OIDC Provider"
+            condition: and(succeeded(), eq('${{ parameters.destroy }}', false))
             inputs:
               awsCredentials: $(AWS_SERVICE_CONNECTION)
               regionName: $(AWS_REGION)
               scriptType: inline
               inlineScript: |
                 set -euo pipefail
-                cd "$(TF_DIR)"
-                # التنفيذ بيعتمد فقط على ملف الـ tfplan الناتج من الخطوة اللي فاتت
-                terraform apply -auto-approve -input=false tfplan
+                echo "🌐 Creating OIDC Identity Provider for cluster: $(CLUSTER_NAME)"
+                
+                # تحميل أداة eksctl لأنها أسهل طريقة لربط الـ OIDC
+                curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+                sudo mv /tmp/eksctl /usr/local/bin
+                
+                # تفعيل الـ OIDC
+                eksctl utils associate-iam-oidc-provider --region $(AWS_REGION) --cluster $(CLUSTER_NAME) --approve
+                
+                echo "✅ OIDC Provider is ready for IRSA."
