@@ -22,7 +22,7 @@ variables:
   SERVICE_ACCOUNT: 'aws-load-balancer-controller'
   HELM_RELEASE: 'aws-load-balancer-controller'
   APP_DIR: k8s/hello-manar
-  AWS_SERVICE_CONNECTION: manar  # ✅ تعريف Service Connection هنا
+  AWS_SERVICE_CONNECTION: manar
 
 stages:
 
@@ -43,7 +43,6 @@ stages:
           inputs:
             terraformVersion: latest
 
-        # ✅ Check AWS identity using Service Connection
         - task: AWSShellScript@1
           displayName: "Check AWS Credentials"
           inputs:
@@ -53,7 +52,6 @@ stages:
             inlineScript: |
               aws sts get-caller-identity
 
-        # ✅ Terraform init
         - task: AWSShellScript@1
           displayName: Terraform init
           inputs:
@@ -64,7 +62,6 @@ stages:
               cd "$(TF_DIR)"
               terraform init -input=false
 
-        # ✅ Terraform plan (apply)
         - task: AWSShellScript@1
           displayName: Terraform plan
           condition: eq('${{ parameters.destroy }}', false)
@@ -80,7 +77,6 @@ stages:
               fi
               terraform plan -out=tfplan -input=false -var-file="$(TF_VAR_FILE)"
 
-        # ✅ Terraform plan (destroy)
         - task: AWSShellScript@1
           displayName: Terraform plan -destroy
           condition: eq('${{ parameters.destroy }}', true)
@@ -96,7 +92,6 @@ stages:
               fi
               terraform plan -destroy -out=tfplan -input=false -var-file="$(TF_VAR_FILE)"
 
-        # ✅ Terraform apply
         - task: AWSShellScript@1
           displayName: Terraform apply
           inputs:
@@ -131,25 +126,19 @@ stages:
           inputs:
             helmVersionToInstall: 'latest'
 
-        # ✅ Configure kubeconfig using Service Connection
+        # ✅ Configure kubeconfig & create Service Account
         - task: AWSShellScript@1
-          displayName: Configure kubeconfig
-          inputs:
-            awsCredentials: $(AWS_SERVICE_CONNECTION)
-            regionName: $(AWS_REGION)
-            scriptType: inline
-            inlineScript: |
-              aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION)
-
-        # ✅ Create Service Account (IRSA) for ALB Controller
-        - task: AWSShellScript@1
-          displayName: "Create Service Account (IRSA)"
+          displayName: "Configure kubeconfig + Create Service Account"
           inputs:
             awsCredentials: $(AWS_SERVICE_CONNECTION)
             regionName: $(AWS_REGION)
             scriptType: inline
             inlineScript: |
               set -euo pipefail
+              # تحديث kubeconfig باستخدام Service Connection
+              aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION)
+              
+              # إنشاء namespace و Service Account
               kubectl create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
               kubectl create serviceaccount $(SERVICE_ACCOUNT) -n $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
               ROLE_ARN=$(aws iam get-role --role-name $(CLUSTER_NAME)-alb-controller-role --query Role.Arn --output text)
@@ -157,7 +146,6 @@ stages:
                 eks.amazonaws.com/role-arn=$ROLE_ARN \
                 -n $(HELM_NAMESPACE) --overwrite
 
-        # ✅ Install ALB Controller using Helm
         - task: AWSShellScript@1
           displayName: "Install ALB Controller"
           inputs:
@@ -190,22 +178,13 @@ stages:
           inputs:
             versionSpec: 'latest'
 
-        # ✅ Configure kubeconfig using Service Connection
         - task: AWSShellScript@1
-          displayName: Configure kubeconfig
+          displayName: "Configure kubeconfig + Deploy App"
           inputs:
             awsCredentials: $(AWS_SERVICE_CONNECTION)
             regionName: $(AWS_REGION)
             scriptType: inline
             inlineScript: |
+              set -euo pipefail
               aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION)
-
-        # ✅ Deploy App + Ingress
-        - task: AWSShellScript@1
-          displayName: "Deploy App + Ingress"
-          inputs:
-            awsCredentials: $(AWS_SERVICE_CONNECTION)
-            regionName: $(AWS_REGION)
-            scriptType: inline
-            inlineScript: |
               kubectl apply -f $(APP_DIR)/
