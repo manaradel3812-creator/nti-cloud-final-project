@@ -1,0 +1,9 @@
+environment         = "nonprod"
+aws_region          = "us-east-1"
+vpc_name            = "final-project-vpc-vpc"
+cluster_name        = "nonprod-eks-cluster"
+eks_cluster_name    = "nonprod-eks-cluster"
+node_instance_types = ["t3.small"]
+desired_capacity    = 1
+min_size            = 1
+max_size            = 2
