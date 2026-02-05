@@ -23,38 +23,44 @@ stages:
 - stage: Infra
   displayName: "Infrastructure Deployment"
   jobs:
-  - job: TerraformJob
-    displayName: "Terraform Infra"
+  - job: TerraformInfra
+    displayName: "Terraform Infra Only"
     pool:
       vmImage: ubuntu-latest
     steps:
-
     - checkout: self
 
-    # Install Terraform (CLI – no extension dependency)
     - bash: |
         set -e
+
+        echo "=== 1️⃣ Install Terraform CLI ==="
         TF_VERSION=1.5.7
         curl -fsSL https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip -o terraform.zip
         unzip terraform.zip
         sudo mv terraform /usr/local/bin/
         terraform -version
-      displayName: "Install Terraform CLI"
 
-    # Terraform Init / Apply / Destroy
-    - task: AWSShellScript@1
-      displayName: "Terraform Init & Apply"
-      inputs:
-        awsCredentials: $(INFRA_CONNECTION)
-        regionName: $(AWS_REGION)
-        scriptType: inline
-        inlineScript: |
-          set -e
-          cd $(TF_DIR)
-          terraform init -input=false
+        echo "=== 2️⃣ Configure AWS Credentials ==="
+        export AWS_ACCESS_KEY_ID=$(AWS_ACCESS_KEY_ID)
+        export AWS_SECRET_ACCESS_KEY=$(AWS_SECRET_ACCESS_KEY)
+        export AWS_SESSION_TOKEN=$(AWS_SESSION_TOKEN)
+        export AWS_REGION=$(AWS_REGION)
 
-          if [ "${{ parameters.destroy }}" = "true" ]; then
-            terraform destroy -auto-approve -var-file=$(TF_VAR_FILE)
-          else
-            terraform apply -auto-approve -var-file=$(TF_VAR_FILE)
-          fi
+        echo "=== 3️⃣ Terraform Init & Apply / Destroy ==="
+        cd $(TF_DIR)
+        terraform init -input=false
+
+        if [ "${{ parameters.destroy }}" = "true" ]; then
+          terraform destroy -auto-approve -var-file=$(TF_VAR_FILE)
+          echo "Infrastructure destroyed successfully."
+        else
+          terraform apply -auto-approve -var-file=$(TF_VAR_FILE)
+          echo "Infrastructure applied successfully."
+        fi
+
+      displayName: "Terraform Infra Only"
+      env:
+        AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
+        AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
+        AWS_SESSION_TOKEN: $(AWS_SESSION_TOKEN)
+        AWS_REGION: $(AWS_REGION)
