@@ -26,10 +26,20 @@ stages:
   - job: TerraformJob
     displayName: "Terraform Infra"
     pool:
-      vmImage: ubuntu-latest  # لو Self-hosted Agent، ضع اسم الـ agent هنا
+      vmImage: ubuntu-latest
     steps:
 
     - checkout: self
+
+    # Install Terraform (CLI – no extension dependency)
+    - bash: |
+        set -e
+        TF_VERSION=1.5.7
+        curl -fsSL https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip -o terraform.zip
+        unzip terraform.zip
+        sudo mv terraform /usr/local/bin/
+        terraform -version
+      displayName: "Install Terraform CLI"
 
     # Terraform Init / Apply / Destroy
     - task: AWSShellScript@1
@@ -47,3 +57,4 @@ stages:
             terraform destroy -auto-approve -var-file=$(TF_VAR_FILE)
           else
             terraform apply -auto-approve -var-file=$(TF_VAR_FILE)
+          fi
