@@ -30,21 +30,23 @@ stages:
     steps:
     - checkout: self
 
+    # Export AWS creds from service connection
     - bash: |
         set -e
 
-        echo "=== 1️⃣ Install Terraform CLI ==="
+        echo "=== 1️⃣ Configure AWS Credentials ==="
+        mkdir -p ~/.aws
+        echo "[default]" > ~/.aws/credentials
+        echo "aws_access_key_id = $AWS_ACCESS_KEY_ID" >> ~/.aws/credentials
+        echo "aws_secret_access_key = $AWS_SECRET_ACCESS_KEY" >> ~/.aws/credentials
+        echo "region = $AWS_REGION" >> ~/.aws/config
+
+        echo "=== 2️⃣ Install Terraform CLI ==="
         TF_VERSION=1.5.7
         curl -fsSL https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip -o terraform.zip
         unzip terraform.zip
         sudo mv terraform /usr/local/bin/
         terraform -version
-
-        echo "=== 2️⃣ Configure AWS Credentials ==="
-        export AWS_ACCESS_KEY_ID=$(AWS_ACCESS_KEY_ID)
-        export AWS_SECRET_ACCESS_KEY=$(AWS_SECRET_ACCESS_KEY)
-        export AWS_SESSION_TOKEN=$(AWS_SESSION_TOKEN)
-        export AWS_REGION=$(AWS_REGION)
 
         echo "=== 3️⃣ Terraform Init & Apply / Destroy ==="
         cd $(TF_DIR)
@@ -52,15 +54,15 @@ stages:
 
         if [ "${{ parameters.destroy }}" = "true" ]; then
           terraform destroy -auto-approve -var-file=$(TF_VAR_FILE)
-          echo "Infrastructure destroyed successfully."
+          echo "✅ Infrastructure destroyed successfully."
         else
           terraform apply -auto-approve -var-file=$(TF_VAR_FILE)
-          echo "Infrastructure applied successfully."
+          echo "✅ Infrastructure applied successfully."
         fi
 
       displayName: "Terraform Infra Only"
       env:
-        AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
-        AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
-        AWS_SESSION_TOKEN: $(AWS_SESSION_TOKEN)
+        AWS_ACCESS_KEY_ID: $(INFRA_CONNECTION_AWS_ACCESS_KEY_ID)
+        AWS_SECRET_ACCESS_KEY: $(INFRA_CONNECTION_AWS_SECRET_ACCESS_KEY)
+        AWS_SESSION_TOKEN: $(INFRA_CONNECTION_AWS_SESSION_TOKEN) # إذا كنت تستخدم temporary credentials
         AWS_REGION: $(AWS_REGION)
