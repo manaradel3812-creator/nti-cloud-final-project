@@ -1,55 +1,49 @@
-trigger:
-  branches:
-    include:
-      - main
+trigger: none
+pr: none
+
+parameters:
+  - name: env
+    displayName: Environment
+    type: string
+    default: nonprod
+    values: [nonprod, prod]
+
+  - name: destroy
+    displayName: Destroy Infra
+    type: boolean
+    default: false
 
 variables:
-  TF_VERSION: "1.5.7"
-  ENVIRONMENT: "nonprod"
-
-pool:
-  vmImage: ubuntu-latest
+  AWS_REGION: us-east-1
+  INFRA_CONNECTION: manar
+  TF_DIR: terraform
+  TF_VAR_FILE: '${{ parameters.env }}.tfvars'
 
 stages:
 - stage: Infra
-  displayName: "Terraform Infra (CLI)"
+  displayName: "Infrastructure Deployment"
   jobs:
-  - job: Terraform
-    displayName: "Terraform Init / Plan / Apply"
+  - job: TerraformJob
+    displayName: "Terraform Infra"
+    pool:
+      vmImage: ubuntu-latest  # لو Self-hosted Agent، ضع اسم الـ agent هنا
     steps:
 
     - checkout: self
 
-    # Install Terraform
-    - bash: |
-        curl -fsSL https://releases.hashicorp.com/terraform/$(TF_VERSION)/terraform_$(TF_VERSION)_linux_amd64.zip -o terraform.zip
-        unzip terraform.zip
-        sudo mv terraform /usr/local/bin/
-        terraform -version
-      displayName: "Install Terraform CLI"
-
-    # Configure AWS Credentials (Service Connection: manar)
-    - task: AWSCLI@1
-      displayName: "Configure AWS Credentials"
+    # Terraform Init / Apply / Destroy
+    - task: AWSShellScript@1
+      displayName: "Terraform Init & Apply"
       inputs:
-        awsCredentials: manar
-        regionName: us-east-1
-        command: version
+        awsCredentials: $(INFRA_CONNECTION)
+        regionName: $(AWS_REGION)
+        scriptType: inline
+        inlineScript: |
+          set -e
+          cd $(TF_DIR)
+          terraform init -input=false
 
-    # Terraform Init
-    - bash: |
-        cd terraform
-        terraform init
-      displayName: "Terraform Init"
-
-    # Terraform Plan
-    - bash: |
-        cd terraform
-        terraform plan -var-file=$(ENVIRONMENT).tfvars
-      displayName: "Terraform Plan"
-
-    # Terraform Apply
-    - bash: |
-        cd terraform
-        terraform apply -auto-approve -var-file=$(ENVIRONMENT).tfvars
-      displayName: "Terraform Apply"
+          if [ "${{ parameters.destroy }}" = "true" ]; then
+            terraform destroy -auto-approve -var-file=$(TF_VAR_FILE)
+          else
+            terraform apply -auto-approve -var-file=$(TF_VAR_FILE)
