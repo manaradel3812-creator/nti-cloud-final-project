@@ -1,56 +1,55 @@
-trigger: none
-pr: none
-
-parameters:
-  - name: env
-    displayName: Environment
-    type: string
-    default: nonprod
-    values: [nonprod, prod]
-  - name: destroy
-    displayName: Destroy Infra
-    type: boolean
-    default: false
+trigger:
+  branches:
+    include:
+      - main
 
 variables:
-  AWS_REGION: us-east-1
-  INFRA_CONNECTION: manar
-  TF_DIR: terraform
-  TF_VAR_FILE: '${{ parameters.env }}.tfvars'
-  CLUSTER_NAME: '${{ parameters.env }}-eks-cluster'
-  HELM_NAMESPACE: kube-system
-  SERVICE_ACCOUNT: aws-load-balancer-controller
-  KUBECONFIG_PATH: $(Pipeline.Workspace)/kubeconfig.yaml
+  TF_VERSION: "1.5.7"
+  ENVIRONMENT: "nonprod"
+
+pool:
+  vmImage: ubuntu-latest
 
 stages:
-
-#################################
-# 1️⃣ Stage: Infrastructure (Terraform)
-#################################
 - stage: Infra
-  displayName: "Infrastructure Deployment"
+  displayName: "Terraform Infra Validation"
   jobs:
-  - job: TerraformJob
-    pool: { vmImage: ubuntu-latest }
+  - job: Terraform
+    displayName: "Terraform Init / Plan / Apply"
     steps:
+
     - checkout: self
 
     - task: TerraformInstaller@1
       displayName: "Install Terraform"
-      inputs: { terraformVersion: latest }
-
-    - task: AWSShellScript@1
-      displayName: "Run Terraform Init & Apply"
       inputs:
-        awsCredentials: $(INFRA_CONNECTION)
-        regionName: $(AWS_REGION)
-        scriptType: inline
-        inlineScript: |
-          cd $(TF_DIR)
-          terraform init -input=false
-          if [ "${{ parameters.destroy }}" = "true" ]; then
-            terraform destroy -auto-approve -var-file=$(TF_VAR_FILE)
-          else
-            terraform apply -auto-approve -var-file=$(TF_VAR_FILE)
-          fi
+        terraformVersion: $(TF_VERSION)
 
+    - task: TerraformTaskV4@4
+      displayName: "Terraform Init"
+      inputs:
+        provider: aws
+        command: init
+        workingDirectory: terraform
+        backendServiceAWS: manar
+        backendAWSBucketName: tfs3finalproject
+        backendAWSKey: dev/terraform.tfstate
+        backendAWSRegion: us-east-1
+
+    - task: TerraformTaskV4@4
+      displayName: "Terraform Plan"
+      inputs:
+        provider: aws
+        command: plan
+        workingDirectory: terraform
+        environmentServiceNameAWS: manar
+        commandOptions: "-var-file=$(ENVIRONMENT).tfvars"
+
+    - task: TerraformTaskV4@4
+      displayName: "Terraform Apply"
+      inputs:
+        provider: aws
+        command: apply
+        workingDirectory: terraform
+        environmentServiceNameAWS: manar
+        commandOptions: "-auto-approve -var-file=$(ENVIRONMENT).tfvars"
