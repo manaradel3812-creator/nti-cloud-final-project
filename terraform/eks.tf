@@ -14,23 +14,13 @@ resource "aws_eks_cluster" "main" {
   ]
 }
 
-# OIDC Provider for IRSA
+# EKS Cluster Auth
 data "aws_eks_cluster" "cluster" {
   name = aws_eks_cluster.main.name
 }
 
 data "aws_eks_cluster_auth" "cluster" {
   name = aws_eks_cluster.main.name
-}
-
-data "tls_certificate" "oidc" {
-  url = replace(data.aws_eks_cluster.cluster.identity[0].oidc[0].issuer, "https://", "")
-}
-
-resource "aws_iam_openid_connect_provider" "eks" {
-  url             = data.aws_eks_cluster.cluster.identity[0].oidc[0].issuer
-  client_id_list  = ["sts.amazonaws.com"]
-  thumbprint_list = [data.tls_certificate.oidc.certificates[0].sha1_fingerprint]
 }
 
 # Node Group
