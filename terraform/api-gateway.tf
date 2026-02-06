@@ -7,7 +7,7 @@ resource "aws_apigatewayv2_api" "http_api" {
 }
 
 # =====================================
-# VPC Link (links API Gateway to the ALB)
+# VPC Link (links API Gateway to the NLB)
 # =====================================
 resource "aws_apigatewayv2_vpc_link" "vpc_link" {
   name               = "${var.environment}-eks-vpc-link"
@@ -16,19 +16,14 @@ resource "aws_apigatewayv2_vpc_link" "vpc_link" {
 }
 
 # =====================================
-# ALB Integration
+# NLB Integration
 # =====================================
-variable "alb_arn" {
-  description = "The ARN of the ALB created by Helm Ingress"
-  type        = string
-  default     = null
-}
 
-resource "aws_apigatewayv2_integration" "alb_integration" {
-  count           = var.alb_arn != null ? 1 : 0
+resource "aws_apigatewayv2_integration" "nlb_integration" {
+  count           = var.nlb_arn != null ? 1 : 0
   api_id          = aws_apigatewayv2_api.http_api.id
   integration_type = "HTTP_PROXY"
-  integration_uri  = var.alb_arn
+  integration_uri  = var.nlb_arn
   connection_type  = "VPC_LINK"
   connection_id    = aws_apigatewayv2_vpc_link.vpc_link.id
 }
@@ -37,10 +32,10 @@ resource "aws_apigatewayv2_integration" "alb_integration" {
 # Route
 # =====================================
 resource "aws_apigatewayv2_route" "default" {
-  count     = var.alb_arn != null ? 1 : 0
+  count     = var.nlb_arn != null ? 1 : 0
   api_id    = aws_apigatewayv2_api.http_api.id
   route_key = "ANY /{proxy+}"
-  target    = "integrations/${aws_apigatewayv2_integration.alb_integration[0].id}"
+  target    = "integrations/${aws_apigatewayv2_integration.nlb_integration[0].id}"
 }
 
 # =====================================

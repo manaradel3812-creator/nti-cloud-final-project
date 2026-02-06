@@ -7,3 +7,4 @@ node_instance_types = ["t3.small"]
 desired_capacity    = 1
 min_size            = 1
 max_size            = 2
+nlb_arn             = null 

@@ -56,11 +56,11 @@
 # }
 
 # =====================================
-# ALB Controller IAM Role (IRSA)
+# NLB Controller IAM Role (IRSA)
 # =====================================
 
-resource "aws_iam_role" "alb_controller_role" {
-  name = "${var.cluster_name}-alb-controller-role"
+resource "aws_iam_role" "nlb_controller_role" {
+  name = "${var.cluster_name}-nlb-controller-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -86,12 +86,12 @@ resource "aws_iam_role" "alb_controller_role" {
 }
 
 # =====================================
-# ALB Controller IAM Policy
+# NLB Controller IAM Policy
 # =====================================
 
-resource "aws_iam_policy" "alb_controller_policy" {
-  name   = "${var.cluster_name}-alb-controller-policy"
-  policy = file("${path.module}/iam/alb-policy.json")
+resource "aws_iam_policy" "nlb_controller_policy" {
+  name   = "${var.cluster_name}-nlb-controller-policy"
+  policy = file("${path.module}/iam/nlb-policy.json")
 }
 
 # =====================================

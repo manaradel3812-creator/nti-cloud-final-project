@@ -29,7 +29,7 @@ resource "aws_security_group" "eks_nodes_sg" {
 # SG للـ Load Balancer
 resource "aws_security_group" "lb_sg" {
   name        = "${var.cluster_name}-lb-sg"
-  description = "SG for Load Balancer"
+  description = "SG for Network Load Balancer"
   vpc_id      = data.aws_vpc.existing_vpc.id
 
   ingress {
