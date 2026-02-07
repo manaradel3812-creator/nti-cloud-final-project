@@ -1,0 +1,62 @@
+- stage: ALB_Controller
+  dependsOn: Infra # ✅ يضمن التنفيذ بعد إنشاء EKS
+  displayName: Install Load Balancer Controller
+  jobs:
+  - job: Helm_ALB
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - checkout: self
+
+    # تثبيت الأدوات اللازمة
+    - task: KubectlInstaller@0
+      inputs:
+        versionSpec: 'latest'
+    - task: HelmInstaller@1
+      inputs:
+        helmVersionToInstall: 'latest'
+
+    # ✅ ربط Pipeline بالعنقود الجديد [17، 26]
+    - task: AWSShellScript@1
+      displayName: Configure kubeconfig
+      inputs:
+        awsCredentials: $(AWS_SERVICE_CONNECTION)
+        regionName: $(AWS_REGION)
+        scriptType: inline
+        inlineScript: |
+          aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION)
+
+    # ✅ إعداد الهوية وربط الصلاحيات (IRSA) [17، 27]
+    - task: AWSShellScript@1
+      displayName: "Create Service Account (IRSA)"
+      inputs:
+        awsCredentials: $(AWS_SERVICE_CONNECTION)
+        regionName: $(AWS_REGION)
+        scriptType: inline
+        inlineScript: |
+          set -euo pipefail
+          kubectl create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create serviceaccount $(SERVICE_ACCOUNT) -n $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+          
+          # جلب الـ ARN الخاص بالـ Role الذي أنشأتِه في Terraform
+          ROLE_ARN=$(aws iam get-role --role-name $(CLUSTER_NAME)-nlb-controller-role --query Role.Arn --output text)
+          
+          kubectl annotate serviceaccount $(SERVICE_ACCOUNT) \
+            eks.amazonaws.com/role-arn=$ROLE_ARN \
+            -n $(HELM_NAMESPACE) --overwrite
+
+    # ✅ تثبيت Controller باستخدام Helm [18، 28]
+    - task: AWSShellScript@1
+      displayName: "Install ALB Controller"
+      inputs:
+        awsCredentials: $(AWS_SERVICE_CONNECTION)
+        regionName: $(AWS_REGION)
+        scriptType: inline
+        inlineScript: |
+          helm repo add eks https://aws.github.io/eks-charts
+          helm repo update
+          helm upgrade --install $(HELM_RELEASE) eks/aws-load-balancer-controller \
+            -n $(HELM_NAMESPACE) \
+            --set clusterName=$(CLUSTER_NAME) \
+            --set serviceAccount.create=false \
+            --set serviceAccount.name=$(SERVICE_ACCOUNT)

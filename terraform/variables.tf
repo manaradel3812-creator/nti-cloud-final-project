@@ -1,11 +1,10 @@
-variable "vpc_name" {
-  description = "Name tag of the existing VPC"
-  type        = string
-}
+# ======================
+# General
+# ======================
 variable "aws_region" {
   description = "AWS region"
   type        = string
-  default     = "us-east-1"
+  
 }
 
 variable "environment" {
@@ -14,7 +13,23 @@ variable "environment" {
 }
 
 variable "cluster_name" {
-  description = "EKS cluster name"
+  description = "Cluster name used for SGs, IAM roles, etc."
+  type        = string
+}
+
+# ======================
+# VPC
+# ======================
+variable "vpc_name" {
+  description = "Name tag of the existing VPC"
+  type        = string
+}
+
+# ======================
+# EKS
+# ======================
+variable "eks_cluster_name" {
+  description = "Name of the EKS cluster"
   type        = string
 }
 
@@ -24,25 +39,41 @@ variable "node_instance_types" {
 }
 
 variable "desired_capacity" {
-  type = number
+  description = "Desired number of worker nodes"
+  type        = number
 }
 
 variable "min_size" {
-  type = number
+  description = "Minimum number of worker nodes"
+  type        = number
 }
 
 variable "max_size" {
-  type = number
+  description = "Maximum number of worker nodes"
+  type        = number
 }
 
-variable "eks_cluster_name" {
-  description = "Name of the EKS cluster"
+# ======================
+# NLB Settings
+# ======================
+variable "nlb_name" {
+  description = "Optional NLB name"
   type        = string
+  default     = ""
 }
 
+variable "target_group_port" {
+  description = "Port for the NLB Target Group"
+  type        = number
+  default     = 80
+}
 
+# ======================
+# NLB ARN for API Gateway
+# ======================
 variable "nlb_arn" {
-  description = "The ARN of the Network Load Balancer"
+  description = "Optional NLB ARN for API Gateway integration"
   type        = string
-  default     = null # ✅ يجعله اختيارياً فلا يفشل الـ Pipeline إذا لم يجد قيمة في tfvars
+  default     = null
 }
+

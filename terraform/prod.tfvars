@@ -1,11 +1,12 @@
 
-vpc_name            = "prod-vpc"
-environment         = "prod"
+environment         = "prod-vpc"
 aws_region          = "us-east-1"
-eks_cluster_name    = "prod-cluster"
+vpc_name            = "final-project-vpc-vpc"
+eks_cluster_name    = "prod-eks-cluster"
 cluster_name        = "prod-eks-cluster"
 node_instance_types = ["t3.small"]
-desired_capacity    = 3
-min_size            = 2
-max_size            = 5
-nlb_arn             = null 
+desired_capacity    = 1
+min_size            = 1
+max_size            = 2
+#nlb_name            = null
+target_group_port   = 80
