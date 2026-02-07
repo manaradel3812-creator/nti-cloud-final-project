@@ -2,25 +2,23 @@ name: Helm Deploy ALB Controller to EKS
 
 on:
   workflow_run:
-    workflows: ["Terraform Pipeline"]
+    workflows: ["Terraform Pipeline"]  # الاسم بالضبط للـ Terraform workflow
     types:
       - completed
 
-env:
-  HELM_NAMESPACE: kube-system
-  SERVICE_ACCOUNT: aws-load-balancer-controller
-  HELM_RELEASE: aws-load-balancer-controller
-
 jobs:
   deploy-alb:
+    # تنفذ فقط لو Terraform نجحت
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
+
     env:
-      CLUSTER_NAME: my-eks-cluster         # ممكن تعدل على حسب env
+      # هنا نكتب القيم مباشرة
+      CLUSTER_NAME: my-eks-cluster
       AWS_REGION: us-east-1
-      HELM_NAMESPACE: ${{ env.HELM_NAMESPACE }}
-      SERVICE_ACCOUNT: ${{ env.SERVICE_ACCOUNT }}
-      HELM_RELEASE: ${{ env.HELM_RELEASE }}
+      HELM_NAMESPACE: kube-system
+      SERVICE_ACCOUNT: aws-load-balancer-controller
+      HELM_RELEASE: aws-load-balancer-controller
 
     steps:
       - name: Checkout repository
@@ -45,15 +43,16 @@ jobs:
 
       - name: Configure kubeconfig for EKS
         run: |
+          echo "Configuring kubeconfig for cluster $CLUSTER_NAME in region $AWS_REGION"
           aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
 
-      - name: Create Namespace
+      - name: Create Namespace if not exists
         run: |
           kubectl create namespace $HELM_NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Install ALB Controller via Helm
         run: |
-          # Assume service account already created via Terraform with IRSA
+          echo "Deploying AWS Load Balancer Controller with Helm"
           helm repo add eks https://aws.github.io/eks-charts
           helm repo update
           helm upgrade --install $HELM_RELEASE eks/aws-load-balancer-controller \
