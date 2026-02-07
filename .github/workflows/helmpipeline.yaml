@@ -1,0 +1,83 @@
+name: Helm ALB Controller Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      cluster_name:
+        description: 'EKS Cluster Name'
+        required: true
+        default: 'my-eks-cluster'
+      helm_namespace:
+        description: 'Helm Namespace'
+        required: true
+        default: 'kube-system'
+      service_account:
+        description: 'Service Account Name'
+        required: true
+        default: 'aws-load-balancer-controller'
+      helm_release:
+        description: 'Helm Release Name'
+        required: true
+        default: 'alb-controller'
+      aws_region:
+        description: 'AWS Region'
+        required: true
+        default: 'us-east-1'
+
+jobs:
+  deploy-alb:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # تثبيت kubectl
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+
+      # تثبيت Helm
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: 'latest'
+
+      # تكوين kubeconfig للـ EKS
+      - name: Configure kubeconfig
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ github.event.inputs.aws_region }}
+
+      - name: Update kubeconfig
+        run: |
+          echo "Configuring kubeconfig for cluster ${{ github.event.inputs.cluster_name }}"
+          aws eks update-kubeconfig --name ${{ github.event.inputs.cluster_name }} --region ${{ github.event.inputs.aws_region }}
+
+      # إنشاء Service Account مع IRSA
+      - name: Create Service Account (IRSA)
+        run: |
+          set -euo pipefail
+          echo "Creating namespace ${{ github.event.inputs.helm_namespace }}"
+          kubectl create namespace ${{ github.event.inputs.helm_namespace }} --dry-run=client -o yaml | kubectl apply -f -
+          echo "Creating service account ${{ github.event.inputs.service_account }}"
+          kubectl create serviceaccount ${{ github.event.inputs.service_account }} -n ${{ github.event.inputs.helm_namespace }} --dry-run=client -o yaml | kubectl apply -f -
+          
+          ROLE_ARN=$(aws iam get-role --role-name ${{ github.event.inputs.cluster_name }}-nlb-controller-role --query Role.Arn --output text)
+          echo "Annotating service account with role $ROLE_ARN"
+          kubectl annotate serviceaccount ${{ github.event.inputs.service_account }} \
+            eks.amazonaws.com/role-arn=$ROLE_ARN \
+            -n ${{ github.event.inputs.helm_namespace }} --overwrite
+
+      # تثبيت ALB Controller باستخدام Helm
+      - name: Install Load Balancer Controller
+        run: |
+          helm repo add eks https://aws.github.io/eks-charts
+          helm repo update
+          helm upgrade --install ${{ github.event.inputs.helm_release }} eks/aws-load-balancer-controller \
+            -n ${{ github.event.inputs.helm_namespace }} \
+            --set clusterName=${{ github.event.inputs.cluster_name }} \
+            --set serviceAccount.create=false \
+            --set serviceAccount.name=${{ github.event.inputs.service_account }}
