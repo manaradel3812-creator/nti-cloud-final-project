@@ -1,38 +1,26 @@
 name: Helm Deploy ALB Controller to EKS
 
 on:
-  workflow_dispatch:
-    inputs:
-      cluster_name:
-        description: 'EKS Cluster Name'
-        required: true
-        default: 'my-eks-cluster'
-      region:
-        description: 'AWS Region'
-        required: true
-        default: 'us-east-1'
-      helm_namespace:
-        description: 'Namespace for ALB Controller'
-        required: true
-        default: 'kube-system'
-      service_account:
-        description: 'Service Account Name'
-        required: true
-        default: 'aws-load-balancer-controller'
-      helm_release:
-        description: 'Helm Release Name'
-        required: true
-        default: 'aws-load-balancer-controller'
+  workflow_run:
+    workflows: ["Terraform Pipeline"]
+    types:
+      - completed
+
+env:
+  HELM_NAMESPACE: kube-system
+  SERVICE_ACCOUNT: aws-load-balancer-controller
+  HELM_RELEASE: aws-load-balancer-controller
 
 jobs:
   deploy-alb:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     env:
-      CLUSTER_NAME: ${{ github.event.inputs.cluster_name }}
-      AWS_REGION: ${{ github.event.inputs.region }}
-      HELM_NAMESPACE: ${{ github.event.inputs.helm_namespace }}
-      SERVICE_ACCOUNT: ${{ github.event.inputs.service_account }}
-      HELM_RELEASE: ${{ github.event.inputs.helm_release }}
+      CLUSTER_NAME: my-eks-cluster         # ممكن تعدل على حسب env
+      AWS_REGION: us-east-1
+      HELM_NAMESPACE: ${{ env.HELM_NAMESPACE }}
+      SERVICE_ACCOUNT: ${{ env.SERVICE_ACCOUNT }}
+      HELM_RELEASE: ${{ env.HELM_RELEASE }}
 
     steps:
       - name: Checkout repository
@@ -42,43 +30,4 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Install kubectl
-        uses: azure/setup-kubectl@v3
-        with:
-          version: 'latest'
-
-      - name: Install Helm
-        uses: azure/setup-helm@v3
-        with:
-          version: 'latest'
-
-      - name: Configure kubeconfig for EKS
-        run: |
-          echo "Configuring kubeconfig for cluster $CLUSTER_NAME in region $AWS_REGION"
-          aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
-
-      - name: Create Namespace
-        run: |
-          kubectl create namespace $HELM_NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
-
-      - name: Create Service Account with IRSA
-        run: |
-          kubectl create serviceaccount $SERVICE_ACCOUNT -n $HELM_NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
-          ROLE_ARN=$(aws iam get-role --role-name $CLUSTER_NAME-nlb-controller-role --query Role.Arn --output text)
-          echo "Annotating service account $SERVICE_ACCOUNT with role $ROLE_ARN"
-          kubectl annotate serviceaccount $SERVICE_ACCOUNT \
-            eks.amazonaws.com/role-arn=$ROLE_ARN \
-            -n $HELM_NAMESPACE --overwrite
-
-      - name: Install ALB Controller via Helm
-        run: |
-          helm repo add eks https://aws.github.io/eks-charts
-          helm repo update
-          helm upgrade --install $HELM_RELEASE eks/aws-load-balancer-controller \
-            -n $HELM_NAMESPACE \
-            --set clusterName=$CLUSTER_NAME \
-            --set serviceAccount.create=false \
-            --set serviceAccount.name=$SERVICE_ACCOUNT
+          aws-
