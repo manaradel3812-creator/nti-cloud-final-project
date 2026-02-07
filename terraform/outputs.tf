@@ -1,29 +1,13 @@
-output "vpc_id" {
-  value = data.aws_vpc.existing_vpc.id
-}
+output "vpc_id" { value = aws_vpc.main.id }
+output "private_subnet_ids" { value = aws_subnet.private[*].id }
+output "public_subnet_ids" { value = aws_subnet.public[*].id }
 
-output "private_subnet_ids" {
-  value = data.aws_subnets.private.ids
-}
+output "eks_cluster_name" { value = aws_eks_cluster.main.name }
+output "eks_cluster_endpoint" { value = aws_eks_cluster.main.endpoint }
+output "eks_cluster_arn" { value = aws_eks_cluster.main.arn }
 
-output "public_subnet_ids" {
-  value = data.aws_subnets.public.ids
-}
-
-# output "nlb_arn" {
-#   value = aws_lb.nlb.arn
-# }
-
-# output "nlb_dns_name" {
-#   value = aws_lb.nlb.dns_name
-# }
-
-# output "nlb_listener_arn" {
-#   description = "ARN of the NLB listener for API Gateway"
-#   value       = aws_lb_listener.nlb_listener.arn
-# }
-
-# output "target_group_arn" {
-#   description = "ARN of the NLB target group"
-#   value       = aws_lb_target_group.app_tg.arn
-# }
+output "eks_node_group_name" { value = aws_eks_node_group.main.node_group_name }
+output "fargate_profile_name" { value = aws_eks_fargate_profile.default.fargate_profile_name }
+output "cognito_user_pool_id" { value = aws_cognito_user_pool.main.id }
+output "cognito_user_pool_client_id" { value = aws_cognito_user_pool_client.main.id }
+output "cognito_user_pool_domain" { value = aws_cognito_user_pool_domain.main.domain }

@@ -10,7 +10,7 @@ terraform {
 
   backend "s3" {
     bucket  = "tfs3finalproject"
-    key     = "dev/terraform.tfstate"
+    key     = "nonprod/terraform.tfstate"
     region  = "us-east-1"
     encrypt = true
   }
@@ -19,8 +19,3 @@ terraform {
 provider "aws" {
   region = var.aws_region
 }
-
-  #access_key = "A#"
-  #secret_key = "o#"
-
-

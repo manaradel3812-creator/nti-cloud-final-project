@@ -4,7 +4,6 @@
 variable "aws_region" {
   description = "AWS region"
   type        = string
-  
 }
 
 variable "environment" {
@@ -21,8 +20,13 @@ variable "cluster_name" {
 # VPC
 # ======================
 variable "vpc_name" {
-  description = "Name tag of the existing VPC"
+  description = "Name tag of the VPC to create"
   type        = string
+}
+
+variable "azs" {
+  description = "List of Availability Zones to use for subnets"
+  type        = list(string)
 }
 
 # ======================
@@ -54,7 +58,7 @@ variable "max_size" {
 }
 
 # ======================
-# NLB Settings
+# Optional NLB Settings
 # ======================
 variable "nlb_name" {
   description = "Optional NLB name"
@@ -62,18 +66,14 @@ variable "nlb_name" {
   default     = ""
 }
 
-variable "target_group_port" {
-  description = "Port for the NLB Target Group"
-  type        = number
-  default     = 80
-}
-
-# ======================
-# NLB ARN for API Gateway
-# ======================
 variable "nlb_arn" {
   description = "Optional NLB ARN for API Gateway integration"
   type        = string
   default     = null
 }
 
+variable "target_group_port" {
+  description = "Port for the NLB Target Group"
+  type        = number
+  default     = 80
+}
