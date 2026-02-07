@@ -30,4 +30,35 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install kubectl
+        uses: actions/setup-kubectl@v3
+        with:
+          version: '1.27.3'
+
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: '3.12.0'
+
+      - name: Configure kubeconfig for EKS
+        run: |
+          aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
+
+      - name: Create Namespace
+        run: |
+          kubectl create namespace $HELM_NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Install ALB Controller via Helm
+        run: |
+          # Assume service account already created via Terraform with IRSA
+          helm repo add eks https://aws.github.io/eks-charts
+          helm repo update
+          helm upgrade --install $HELM_RELEASE eks/aws-load-balancer-controller \
+            -n $HELM_NAMESPACE \
+            --set clusterName=$CLUSTER_NAME \
+            --set serviceAccount.create=false \
+            --set serviceAccount.name=$SERVICE_ACCOUNT \
+            --set region=$AWS_REGION
