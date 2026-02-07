@@ -1,32 +1,103 @@
-name: Helm ALB Controller Deployment
+name: Terraform + ALB Controller Pipeline
 
 on:
   workflow_dispatch:
     inputs:
-      cluster_name:
-        description: 'EKS Cluster Name'
+      env:
+        description: 'Environment'
         required: true
-        default: 'my-eks-cluster'
-      helm_namespace:
-        description: 'Helm Namespace'
+        default: 'nonprod'
+        type: choice
+        options:
+          - nonprod
+          - prod
+      destroy:
+        description: 'Destroy Infrastructure?'
         required: true
-        default: 'kube-system'
-      service_account:
-        description: 'Service Account Name'
-        required: true
-        default: 'aws-load-balancer-controller'
-      helm_release:
-        description: 'Helm Release Name'
-        required: true
-        default: 'alb-controller'
+        default: 'false'
+        type: boolean
       aws_region:
         description: 'AWS Region'
         required: true
         default: 'us-east-1'
+      helm_namespace:
+        description: 'Helm Namespace for ALB Controller'
+        required: true
+        default: 'kube-system'
+      helm_release:
+        description: 'Helm Release Name for ALB Controller'
+        required: true
+        default: 'alb-controller'
+      service_account:
+        description: 'Service Account Name for ALB Controller'
+        required: true
+        default: 'aws-load-balancer-controller'
+
+env:
+  TF_DIR: terraform
+  TF_VERSION: '1.5.7'
 
 jobs:
-  deploy-alb:
+  terraform:
+    name: Terraform Apply/Destroy
     runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # تثبيت Terraform
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      # تكوين AWS Credentials
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ github.event.inputs.aws_region }}
+
+      # Terraform Init
+      - name: Terraform Init
+        run: |
+          cd ${{ env.TF_DIR }}
+          terraform init -input=false
+
+      # Terraform Plan / Plan Destroy
+      - name: Terraform Plan
+        if: ${{ github.event.inputs.destroy == 'false' }}
+        run: |
+          cd ${{ env.TF_DIR }}
+          terraform plan -out=tfplan -input=false -var-file="${{ github.event.inputs.env }}.tfvars"
+
+      - name: Terraform Plan Destroy
+        if: ${{ github.event.inputs.destroy == 'true' }}
+        run: |
+          cd ${{ env.TF_DIR }}
+          terraform plan -destroy -out=tfplan -input=false -var-file="${{ github.event.inputs.env }}.tfvars"
+
+      # Terraform Apply
+      - name: Terraform Apply
+        run: |
+          cd ${{ env.TF_DIR }}
+          terraform apply -auto-approve -input=false tfplan
+
+      # استخراج Outputs من Terraform
+      - name: Get Terraform Outputs
+        id: tf_outputs
+        run: |
+          cd ${{ env.TF_DIR }}
+          CLUSTER_NAME=$(terraform output -raw eks_cluster_name)
+          CLUSTER_ROLE_ARN=$(terraform output -raw eks_cluster_role_arn)
+          echo "CLUSTER_NAME=$CLUSTER_NAME" >> $GITHUB_ENV
+          echo "CLUSTER_ROLE_ARN=$CLUSTER_ROLE_ARN" >> $GITHUB_ENV
+
+  alb_controller:
+    name: Deploy ALB Controller
+    runs-on: ubuntu-latest
+    needs: terraform
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -43,20 +114,21 @@ jobs:
         with:
           version: 'latest'
 
-      # تكوين kubeconfig للـ EKS
-      - name: Configure kubeconfig
+      # تكوين AWS Credentials
+      - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ github.event.inputs.aws_region }}
 
+      # تحديث kubeconfig تلقائيًا باستخدام اسم الكلاستر من Terraform
       - name: Update kubeconfig
         run: |
-          echo "Configuring kubeconfig for cluster ${{ github.event.inputs.cluster_name }}"
-          aws eks update-kubeconfig --name ${{ github.event.inputs.cluster_name }} --region ${{ github.event.inputs.aws_region }}
+          echo "Configuring kubeconfig for cluster $CLUSTER_NAME"
+          aws eks update-kubeconfig --name $CLUSTER_NAME --region ${{ github.event.inputs.aws_region }}
 
-      # إنشاء Service Account مع IRSA
+      # إنشاء namespace و service account مع IRSA
       - name: Create Service Account (IRSA)
         run: |
           set -euo pipefail
@@ -65,19 +137,18 @@ jobs:
           echo "Creating service account ${{ github.event.inputs.service_account }}"
           kubectl create serviceaccount ${{ github.event.inputs.service_account }} -n ${{ github.event.inputs.helm_namespace }} --dry-run=client -o yaml | kubectl apply -f -
           
-          ROLE_ARN=$(aws iam get-role --role-name ${{ github.event.inputs.cluster_name }}-nlb-controller-role --query Role.Arn --output text)
-          echo "Annotating service account with role $ROLE_ARN"
+          echo "Annotating service account with role $CLUSTER_ROLE_ARN"
           kubectl annotate serviceaccount ${{ github.event.inputs.service_account }} \
-            eks.amazonaws.com/role-arn=$ROLE_ARN \
+            eks.amazonaws.com/role-arn=$CLUSTER_ROLE_ARN \
             -n ${{ github.event.inputs.helm_namespace }} --overwrite
 
       # تثبيت ALB Controller باستخدام Helm
-      - name: Install Load Balancer Controller
+      - name: Install ALB Controller
         run: |
           helm repo add eks https://aws.github.io/eks-charts
           helm repo update
           helm upgrade --install ${{ github.event.inputs.helm_release }} eks/aws-load-balancer-controller \
             -n ${{ github.event.inputs.helm_namespace }} \
-            --set clusterName=${{ github.event.inputs.cluster_name }} \
+            --set clusterName=$CLUSTER_NAME \
             --set serviceAccount.create=false \
             --set serviceAccount.name=${{ github.event.inputs.service_account }}
