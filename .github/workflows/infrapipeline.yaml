@@ -1,4 +1,4 @@
-name: Terraform Infra Pipeline
+name: Terraform Infra
 
 on:
   workflow_dispatch:
@@ -7,30 +7,19 @@ on:
         description: 'Environment'
         required: true
         default: 'nonprod'
-        type: choice
-        options:
-          - nonprod
-          - prod
-      destroy:
-        description: 'Destroy Infrastructure?'
-        required: true
-        default: 'false'
-        type: boolean
 
 env:
   TF_DIR: terraform
-  AWS_REGION: us-east-1
   TF_VERSION: '1.5.7'
 
 jobs:
   terraform:
-    name: Terraform Apply/Destroy
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Set up Terraform
+      - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
         with:
           terraform_version: ${{ env.TF_VERSION }}
@@ -40,30 +29,25 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Terraform Init
         run: |
-          set -euo pipefail
           cd ${{ env.TF_DIR }}
           terraform init -input=false
 
-      - name: Terraform Plan
-        if: ${{ github.event.inputs.destroy == 'false' }}
-        run: |
-          set -euo pipefail
-          cd ${{ env.TF_DIR }}
-          terraform plan -out=tfplan -input=false -var-file="${{ github.event.inputs.env }}.tfvars"
-
-      - name: Terraform Plan Destroy
-        if: ${{ github.event.inputs.destroy == 'true' }}
-        run: |
-          set -euo pipefail
-          cd ${{ env.TF_DIR }}
-          terraform plan -destroy -out=tfplan -input=false -var-file="${{ github.event.inputs.env }}.tfvars"
-
       - name: Terraform Apply
         run: |
-          set -euo pipefail
           cd ${{ env.TF_DIR }}
-          terraform apply -auto-approve -input=false tfplan
+          terraform apply -auto-approve -input=false
+
+      # حفظ outputs كـ artifact
+      - name: Save Terraform outputs
+        run: |
+          cd ${{ env.TF_DIR }}
+          terraform output -json > tf_outputs.json
+        # نشر artifact
+      - uses: actions/upload-artifact@v3
+        with:
+          name: terraform-outputs
+          path: ${{ env.TF_DIR }}/tf_outputs.json
