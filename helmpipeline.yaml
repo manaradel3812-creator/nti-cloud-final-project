@@ -22,12 +22,14 @@ stages:
           - task: AWSShellScript@1
             displayName: "Configure kubeconfig"
             inputs:
-              awsCredentials: manar           # اسم Service Connection الصحيح
-              regionName: $(AWS_REGION)
+              awsCredentials: manar           
+              regionName: $(AWS_REGION)        # ✅ تم التصحيح لأحرف كبيرة
               scriptType: inline
               inlineScript: |
-                echo "Configuring kubeconfig for cluster $CLUSTER_NAME in region $AWS_REGION"
-                aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
+                # ✅ استخدام $(...) لضمان جلب القيم من الـ Pipeline
+                echo "Configuring kubeconfig for cluster $(CLUSTER_NAME) in region $(AWS_REGION)"
+                aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION)
+
 
           # إنشاء الـ Service Account مع IRSA
           - task: AWSShellScript@1
