@@ -37,6 +37,8 @@ jobs:
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v2
+        env:
+          AWS_REGION: ${{ env.AWS_REGION }}   # Make env available to action input
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -48,7 +50,7 @@ jobs:
           cd ${{ env.TF_DIR }}
           terraform init -input=false
 
-      - name: Terraform Plan
+      - name: Terraform Plan (Create/Update)
         if: ${{ github.event.inputs.destroy == 'false' }}
         run: |
           set -euo pipefail
