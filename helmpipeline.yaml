@@ -1,4 +1,4 @@
-- stage: ALB_Controller
+- stages: ALB_Controller
   dependsOn: Infra # ✅ يضمن التنفيذ بعد إنشاء EKS
   displayName: Install Load Balancer Controller
   jobs:
