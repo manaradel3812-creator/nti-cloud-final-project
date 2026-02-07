@@ -1,6 +1,5 @@
 stages:
   - stage: ALB_Controller
-    dependsOn: Infra # يضمن التنفيذ بعد نجاح إنشاء EKS في المرحلة الأولى
     displayName: Install Load Balancer Controller
     jobs:
       - job: Helm_ALB
