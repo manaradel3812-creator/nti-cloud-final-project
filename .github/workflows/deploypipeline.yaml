@@ -2,18 +2,17 @@ name: Helm Deploy ALB Controller to EKS
 
 on:
   workflow_run:
-    workflows: ["Terraform Pipeline"]  # الاسم بالضبط للـ Terraform workflow
+    workflows: ["Terraform Pipeline"]  # تأكد من اسم workflow بالضبط
     types:
       - completed
 
 jobs:
   deploy-alb:
-    # تنفذ فقط لو Terraform نجحت
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
 
+    # تعريف المتغيرات مباشرة
     env:
-      # هنا نكتب القيم مباشرة
       CLUSTER_NAME: my-eks-cluster
       AWS_REGION: us-east-1
       HELM_NAMESPACE: kube-system
@@ -32,7 +31,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Install kubectl
-        uses: actions/setup-kubectl@v3
+        uses: azure/setup-kubectl@v3
         with:
           version: '1.27.3'
 
