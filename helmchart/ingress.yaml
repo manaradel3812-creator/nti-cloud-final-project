@@ -3,24 +3,30 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
   annotations:
-    kubernetes.io/ingress.class: {{ .Values.ingress.className }}
+    # 👇 ALB Controller annotations
+    kubernetes.io/ingress.class: {{ .Values.ingress.className | default "alb" }}
+    alb.ingress.kubernetes.io/scheme: {{ .Values.ingress.scheme | default "internet-facing" }}
+    alb.ingress.kubernetes.io/target-type: {{ .Values.ingress.targetType | default "ip" }}
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
     {{- range $key, $value := .Values.ingress.annotations }}
     {{ $key }}: {{ $value | quote }}
     {{- end }}
 spec:
   rules:
-    - http:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host }}
+      http:
         paths:
-        {{- range .Values.ingress.hosts }}
-        {{- range .paths }}
-        - path: {{ .path }}
-          pathType: {{ .pathType }}
-          backend:
-            service:
-              name: {{ $.Release.Name }}
-              port:
-                number: {{ $.Values.service.port }}
-        {{- end }}
-        {{- end }}
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType | default "Prefix" }}
+            backend:
+              service:
+                name: {{ $.Release.Name }}
+                port:
+                  number: {{ $.Values.service.port | default 80 }}
+          {{- end }}
+    {{- end }}
 {{- end }}

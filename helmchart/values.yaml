@@ -11,11 +11,15 @@ service:
 ingress:
   enabled: true
   className: alb
+  scheme: internet-facing          # optional, used in ingress.yaml
+  targetType: ip                   # recommended for pods
   annotations:
     alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
+    external-dns.alpha.kubernetes.io/hostname: myapp.example.com
   hosts:
-    - paths:
+    - host: myapp.example.com
+      paths:
         - path: /
           pathType: Prefix
-
-
