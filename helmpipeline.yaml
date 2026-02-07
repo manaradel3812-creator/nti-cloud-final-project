@@ -3,12 +3,13 @@ stages:
     displayName: Install Load Balancer Controller
     jobs:
       - job: Helm_ALB
+        displayName: Install ALB Controller
         pool:
           vmImage: ubuntu-latest
         steps:
           - checkout: self
 
-          # تثبيت الأدوات اللازمة للتحكم بالعنقود
+          # تثبيت أدوات kubectl و Helm
           - task: KubectlInstaller@0
             inputs:
               versionSpec: 'latest'
@@ -17,18 +18,46 @@ stages:
             inputs:
               helmVersionToInstall: 'latest'
 
-          # ربط الـ Pipeline بالعنقود المخصص (nonprod-eks-cluster)
+          # ربط الـ Pipeline بالـ EKS cluster
           - task: AWSShellScript@1
             displayName: "Configure kubeconfig"
             inputs:
-              awsCredentials: $(AWS_SERVICE_CONNECTION)
+              awsCredentials: manar           # <-- ضع هنا اسم Service Connection الصحيح
               regionName: $(AWS_REGION)
               scriptType: inline
               inlineScript: |
                 aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(AWS_REGION)
 
-          # إعداد الهوية (IRSA) لتمكين الـ Controller من إنشاء الـ NLB
+          # إنشاء الـ Service Account مع IRSA
           - task: AWSShellScript@1
             displayName: "Create Service Account (IRSA)"
             inputs:
-              awsCredentials: $(AWS_SERVICE_CO
+              awsCredentials: manar           # <-- Service Connection
+              regionName: $(AWS_REGION)
+              scriptType: inline
+              inlineScript: |
+                set -euo pipefail
+                kubectl create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+                kubectl create serviceaccount $(SERVICE_ACCOUNT) -n $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+                
+                ROLE_ARN=$(aws iam get-role --role-name $(CLUSTER_NAME)-nlb-controller-role --query Role.Arn --output text)
+                
+                kubectl annotate serviceaccount $(SERVICE_ACCOUNT) \
+                  eks.amazonaws.com/role-arn=$ROLE_ARN \
+                  -n $(HELM_NAMESPACE) --overwrite
+
+          # تثبيت الـ ALB Controller باستخدام Helm
+          - task: AWSShellScript@1
+            displayName: "Install Load Balancer Controller"
+            inputs:
+              awsCredentials: manar           # <-- Service Connection
+              regionName: $(AWS_REGION)
+              scriptType: inline
+              inlineScript: |
+                helm repo add eks https://aws.github.io/eks-charts
+                helm repo update
+                helm upgrade --install $(HELM_RELEASE) eks/aws-load-balancer-controller \
+                  -n $(HELM_NAMESPACE) \
+                  --set clusterName=$(CLUSTER_NAME) \
+                  --set serviceAccount.create=false \
+                  --set serviceAccount.name=$(SERVICE_ACCOUNT)
