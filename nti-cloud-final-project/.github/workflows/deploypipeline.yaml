@@ -1,0 +1,69 @@
+name: Helm Deploy ALB Controller to EKS
+
+on:
+  workflow_run:
+    workflows: ["Terraform Pipeline"]  # Must match exactly the workflow name
+    types:
+      - completed
+
+jobs:
+  deploy-alb:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+
+    env:
+      CLUSTER_NAME: my-eks-cluster
+      AWS_REGION: us-east-1
+      HELM_NAMESPACE: kube-system
+      SERVICE_ACCOUNT: aws-load-balancer-controller
+      HELM_RELEASE: aws-load-balancer-controller
+
+    steps:
+      # 1. Checkout the repository
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # 2. Configure AWS credentials
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # 3. Install kubectl (correct action)
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: '1.27.3'
+
+      # 4. Install Helm (correct action)
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: '3.12.0'
+
+      # 5. Configure kubeconfig for EKS
+      - name: Configure kubeconfig
+        run: |
+          echo "Configuring kubeconfig for cluster $CLUSTER_NAME in region $AWS_REGION"
+          aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
+
+      # 6. Ensure namespace exists
+      - name: Create Namespace if not exists
+        run: |
+          kubectl create namespace $HELM_NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+
+      # 7. Deploy AWS Load Balancer Controller via Helm
+      - name: Deploy ALB Controller via Helm
+        run: |
+          echo "Deploying AWS Load Balancer Controller"
+          helm repo add eks https://aws.github.io/eks-charts
+          helm repo update
+          helm upgrade --install $HELM_RELEASE eks/aws-load-balancer-controller \
+            -n $HELM_NAMESPACE \
+            --set clusterName=$CLUSTER_NAME \
+            --set serviceAccount.create=false \
+            --set serviceAccount.name=$SERVICE_ACCOUNT \
+            --set region=$AWS_REGION \
+            --wait
