@@ -42,26 +42,18 @@ jobs:
             exit 1
           fi
 
-          echo "Found tf-outputs.json. Extracting values..."
-
-          # التعديل الجوهري: استخدام eks_cluster_name بدلاً من cluster_name
           CLUSTER=$(jq -r '.eks_cluster_name.value // empty' $FILE_PATH)
           VPC=$(jq -r '.vpc_id.value // empty' $FILE_PATH)
-          
-          # التعامل مع الـ ARN المفقود في الـ outputs.tf الحالي
           TG=$(jq -r '.nlb_tg_arn.value // "MISSING_ARN"' $FILE_PATH)
 
           if [ -z "$CLUSTER" ] || [ "$CLUSTER" == "null" ]; then
-            echo "::error::Failed to parse eks_cluster_name! Check if Terraform run was successful."
+            echo "::error::Failed to parse eks_cluster_name!"
             exit 1
           fi
 
-          # تصدير المتغيرات للخطوات القادمة
           echo "CLUSTER_NAME=$CLUSTER" >> $GITHUB_ENV
           echo "VPC_ID=$VPC" >> $GITHUB_ENV
           echo "NLB_TG_ARN=$TG" >> $GITHUB_ENV
-          
-          echo "✅ Data Loaded: Cluster=$CLUSTER, VPC=$VPC"
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -81,12 +73,9 @@ jobs:
 
       - name: Create AWS LBC ServiceAccount
         run: |
-          # محاولة جلب الـ Role ARN ديناميكياً
           ROLE_ARN=$(aws iam get-role --role-name ${{ env.CLUSTER_NAME }}-aws_load_balancer_controller-irsa --query Role.Arn --output text || echo "ROLE_NOT_FOUND")
           if [ "$ROLE_ARN" != "ROLE_NOT_FOUND" ]; then
             sed "s|ROLE_ARN_PLACEHOLDER|$ROLE_ARN|g" k8s-config/aws-lbc-serviceaccount.yaml | kubectl apply -f -
-          else
-            echo "Warning: IAM Role not found, skipping ServiceAccount creation."
           fi
 
       - name: Deploy AWS Load Balancer Controller
@@ -102,14 +91,20 @@ jobs:
             --set vpcId=${{ env.VPC_ID }} \
             --timeout 10m
 
-      - name: Disable AWS LBC Validating Webhook
+      - name: Force Clean AWS LBC Webhooks
         run: |
+          # مسح الـ Webhooks اللي بتعطل الدنيا لو الـ Controller لسه مش جاهز
+          echo "Cleaning up blocking webhooks..."
           kubectl delete validatingwebhookconfiguration aws-load-balancer-webhook --ignore-not-found
+          kubectl delete mutatingwebhookconfiguration aws-load-balancer-webhook --ignore-not-found
+          kubectl delete validatingwebhookconfiguration elbv2.k8s.aws-validate --ignore-not-found
+          kubectl delete mutatingwebhookconfiguration elbv2.k8s.aws-mutate --ignore-not-found
 
       - name: Deploy NGINX Ingress
         run: |
           helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
           helm repo update
+          # تثبيت Nginx مع تجاهل الـ Webhooks المعطلة
           helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
             -n ${{ env.HELM_NAMESPACE_INGRESS }} \
             --create-namespace \
@@ -118,12 +113,18 @@ jobs:
             --set controller.ingressClassResource.name=nginx \
             --timeout 10m
 
+      - name: Wait for Ingress Controller
+        run: |
+          kubectl -n ${{ env.HELM_NAMESPACE_INGRESS }} wait \
+            --for=condition=Available deployment/ingress-nginx-controller \
+            --timeout=10m
+
       - name: Apply TargetGroupBinding
         run: |
           if [ "${{ env.NLB_TG_ARN }}" != "MISSING_ARN" ]; then
             sed "s|TG_ARN_PLACEHOLDER|${{ env.NLB_TG_ARN }}|g" k8s-config/targetgroup-binding.yaml | kubectl apply -f -
           else
-            echo "⚠️ Skipping TargetGroupBinding because NLB_TG_ARN is missing in Terraform outputs."
+            echo "⚠️ Skipping TargetGroupBinding: ARN missing."
           fi
 
       - name: Deploy ArgoCD
