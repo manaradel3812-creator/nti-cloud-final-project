@@ -37,8 +37,6 @@ jobs:
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v2
-        env:
-          AWS_REGION: ${{ env.AWS_REGION }}   # Make env available to action input
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -50,6 +48,7 @@ jobs:
           cd ${{ env.TF_DIR }}
           terraform init -input=false
 
+      # Plan Create/Update
       - name: Terraform Plan (Create/Update)
         if: ${{ github.event.inputs.destroy == 'false' }}
         run: |
@@ -57,6 +56,7 @@ jobs:
           cd ${{ env.TF_DIR }}
           terraform plan -out=tfplan -input=false -var-file="${{ github.event.inputs.env }}.tfvars"
 
+      # Plan Destroy
       - name: Terraform Plan Destroy
         if: ${{ github.event.inputs.destroy == 'true' }}
         run: |
@@ -64,18 +64,23 @@ jobs:
           cd ${{ env.TF_DIR }}
           terraform plan -destroy -out=tfplan -input=false -var-file="${{ github.event.inputs.env }}.tfvars"
 
-          - name: Terraform Apply
-  id: terraform_apply
-  run: |
-    cd terraform
-    terraform apply -auto-approve -input=false
-    # Export outputs to GitHub Actions
-    echo "CLUSTER_NAME=$(terraform output -raw cluster_name)" >> $GITHUB_OUTPUT
-    echo "VPC_ID=$(terraform output -raw vpc_id)" >> $GITHUB_OUTPUT
-    echo "NLB_TG_ARN=$(terraform output -raw nlb_tg_arn)" >> $GITHUB_OUTPUT
-
-
+      # Apply (Create/Update)
       - name: Terraform Apply
+        if: ${{ github.event.inputs.destroy == 'false' }}
+        id: terraform_apply
+        run: |
+          set -euo pipefail
+          cd ${{ env.TF_DIR }}
+          terraform apply -auto-approve -input=false tfplan
+
+          # Export outputs for GitHub Actions
+          echo "CLUSTER_NAME=$(terraform output -raw cluster_name)" >> $GITHUB_OUTPUT
+          echo "VPC_ID=$(terraform output -raw vpc_id)" >> $GITHUB_OUTPUT
+          echo "NLB_TG_ARN=$(terraform output -raw nlb_tg_arn)" >> $GITHUB_OUTPUT
+
+      # Apply Destroy
+      - name: Terraform Destroy
+        if: ${{ github.event.inputs.destroy == 'true' }}
         run: |
           set -euo pipefail
           cd ${{ env.TF_DIR }}
