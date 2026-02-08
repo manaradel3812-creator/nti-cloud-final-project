@@ -1,32 +1,30 @@
-{{- if .Values.ingress.enabled }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: {{ .Release.Name }}
-  namespace: {{ .Release.Namespace }}
+  name: platform-ingress
+  namespace: ingress-nginx
   annotations:
-    # إحنا شيلنا كل الـ alb.ingress annotations لأن الـ NGINX مش بيفهمها
-    # الـ NGINX controller هو اللي بيفهم السطر اللي جاي ده:
-    kubernetes.io/ingress.class: {{ .Values.ingress.className | default "nginx" }}
-    {{- range $key, $value := .Values.ingress.annotations }}
-    {{ $key }}: {{ $value | quote }}
-    {{- end }}
+    # إحنا بنقول للـ NGINX إنه هو اللي يدير الـ Ingress ده
+    kubernetes.io/ingress.class: "nginx"
 spec:
-  # السطر ده مهم جداً في النسخ الجديدة من Kubernetes
-  ingressClassName: {{ .Values.ingress.className | default "nginx" }}
+  ingressClassName: nginx
   rules:
-    {{- range .Values.ingress.hosts }}
-    - host: {{ .host | quote }}
-      http:
+    - http:
         paths:
-          {{- range .paths }}
-          - path: {{ .path }}
-            pathType: {{ .pathType | default "Prefix" }}
+          # 1️⃣ الـ Endpoint بتاع الأبلكيشن الأساسي
+          - path: /
+            pathType: Prefix
             backend:
               service:
-                name: {{ $.Release.Name }}
+                name: my-app-service # إسم السيرفس بتاعك
                 port:
-                  number: {{ $.Values.service.port | default 80 }}
-          {{- end }}
-    {{- end }}
-{{- end }}
+                  number: 80
+
+          # 2️⃣ الـ Endpoint بتاع ArgoCD (كمثال)
+          - path: /argocd
+            pathType: Prefix
+            backend:
+              service:
+                name: argocd-server
+                port:
+                  number: 80
