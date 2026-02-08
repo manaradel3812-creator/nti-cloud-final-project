@@ -62,23 +62,27 @@ jobs:
           cd ${{ env.TF_DIR }}
           terraform plan -destroy -out=tfplan -input=false -var-file="${{ github.event.inputs.env }}.tfvars"
 
-      - name: Terraform Apply
+        - name: Terraform Apply
         run: |
           set -euo pipefail
           cd ${{ env.TF_DIR }}
           terraform apply -auto-approve -input=false tfplan
 
-      # --- الخطوات الجديدة المضافة لحل مشكلة الـ Artifact ---
-      
       - name: Generate Terraform Outputs File
-        if: ${{ github.event.inputs.destroy == 'false' }} # لا نحتاج الـ outputs في حالة الـ destroy
+        if: ${{ github.event.inputs.destroy == 'false' }}
         run: |
           cd ${{ env.TF_DIR }}
-          terraform output -json > tf-outputs.json
-          echo "Terraform outputs saved to tf-outputs.json"
+          terraform output -json > ../tf-outputs.json # وضع الملف في الفولدر الرئيسي
 
       - name: Upload Terraform Outputs Artifact
         if: ${{ github.event.inputs.destroy == 'false' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-outputs
+          path: tf-outputs.json # رفع الملف من المسار الرئيسي مباشرة
+          retention-days: 5
+
+
         uses: actions/upload-artifact@v4
         with:
           name: terraform-outputs
