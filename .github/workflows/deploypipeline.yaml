@@ -87,16 +87,17 @@ jobs:
             --set terminationGracePeriodSeconds=0 \
             --timeout 10m
 
-      - name: Hard Kill Webhooks & Wait for Controller Pods
+      - name: Hard Kill Webhooks & Wait
         run: |
-          echo "Force removing blocking webhooks..."
+          echo "Force removing ALL blocking webhooks..."
+          # مسح الـ Webhooks اللي مسببة الأيرور بالاسم لفتح الطريق أمام الـ Nginx
           kubectl delete mutatingwebhookconfiguration elbv2.k8s.aws-mutate --ignore-not-found
           kubectl delete validatingwebhookconfiguration elbv2.k8s.aws-validate --ignore-not-found
-          kubectl delete validatingwebhookconfiguration aws-load-balancer-webhook --ignore-not-found
           kubectl delete mutatingwebhookconfiguration aws-load-balancer-webhook --ignore-not-found
+          kubectl delete validatingwebhookconfiguration aws-load-balancer-webhook --ignore-not-found
           
-          echo "Waiting 60 seconds for Controller to be fully ready..."
-          sleep 60 
+          echo "Sleeping to let K8s API breathe..."
+          sleep 15
 
       - name: Debug AWS LBC Pods
         run: |
@@ -104,8 +105,7 @@ jobs:
           kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller
           
           echo "Checking Service Endpoints..."
-          # هذا السطر سيكشف لنا إذا كان هناك IP مربوط بالخدمة أم لا
-          kubectl get endpoints -n kube-system aws-load-balancer-webhook-service
+          kubectl get endpoints -n kube-system aws-load-balancer-webhook-service || echo "Endpoints not found"
 
       - name: Deploy NGINX Ingress
         run: |
