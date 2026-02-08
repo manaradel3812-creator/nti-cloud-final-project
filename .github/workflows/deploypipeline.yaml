@@ -25,7 +25,6 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      # تم تعديل اسم الـ workflow ليتطابق مع اسم الملف الفعلي عندك
       - name: Download Terraform outputs artifact
         uses: dawidd6/action-download-artifact@v3
         with:
@@ -35,70 +34,37 @@ jobs:
           search_artifacts: true
           if_no_artifact_found: fail
 
-          - name: Set Terraform outputs as environment variables
+      - name: Set Terraform outputs as environment variables
         id: set_vars
         run: |
-          # 1. تحديد مكان الملف (الأكشن أحياناً بتفك الضغط في فولدر فرعي)
-          # هنسرچ على الملف في كل الفولدرات اللي نزلت
-          FILE_PATH=$(find . -name "tf-outputs.json" | head -n 1)
+          # البحث عن الملف في كل الفولدرات المنزلة للتأكد من المسار
+          FILE_PATH=$(find ./terraform-output -name "tf-outputs.json" | head -n 1)
           
           if [ -z "$FILE_PATH" ]; then
-            echo "XXX Error: tf-outputs.json NOT found anywhere! XXX"
-            ls -R
+            echo "::error::File tf-outputs.json NOT found!"
+            ls -R ./terraform-output
             exit 1
           fi
 
           echo "Found file at: $FILE_PATH"
-          echo "--- File Content Start ---"
-          cat $FILE_PATH
-          echo "--- File Content End ---"
+          echo "Content of $FILE_PATH:"
+          cat "$FILE_PATH" # دي عشان لو فشل تاني نشوف شكل الـ JSON في الـ Logs
 
-          # 2. استخراج القيم (استخدمنا -r عشان نشيل الكوتيشن و // "null" عشان لو ملقهاش يفشل بدري)
-          CLUSTER_NAME=$(jq -r '.cluster_name.value // empty' $FILE_PATH)
-          VPC_ID=$(jq -r '.vpc_id.value // empty' $FILE_PATH)
-          NLB_TG_ARN=$(jq -r '.nlb_tg_arn.value // empty' $FILE_PATH)
+          # استخراج القيم مع التأكد من وجودها
+          CLUSTER_NAME=$(jq -r '.cluster_name.value // empty' "$FILE_PATH")
+          VPC_ID=$(jq -r '.vpc_id.value // empty' "$FILE_PATH")
+          NLB_TG_ARN=$(jq -r '.nlb_tg_arn.value // empty' "$FILE_PATH")
 
-          # 3. التحقق إن القيم مش فاضية قبل ما نكمل
-          if [ -z "$CLUSTER_NAME" ]; then
-             echo "Error: CLUSTER_NAME is empty or null in JSON!"
-             exit 1
+          # التحقق من أن القيم ليست فارغة
+          if [ -z "$CLUSTER_NAME" ] || [ "$CLUSTER_NAME" == "null" ]; then
+            echo "::error::CLUSTER_NAME is null or empty! Check your Terraform outputs."
+            exit 1
           fi
 
-          # 4. حفظ في الـ ENV
+          # حفظ القيم في بيئة العمل
           echo "CLUSTER_NAME=$CLUSTER_NAME" >> $GITHUB_ENV
           echo "VPC_ID=$VPC_ID" >> $GITHUB_ENV
           echo "NLB_TG_ARN=$NLB_TG_ARN" >> $GITHUB_ENV
-          
-          echo "Final Check - Cluster Name: $CLUSTER_NAME"
-          # 2. استخراج القيم (استخدمنا -r عشان نشيل الكوتيشن و // "null" عشان لو ملقهاش يفشل بدري)
-          CLUSTER_NAME=$(jq -r '.cluster_name.value // empty' $FILE_PATH)
-          VPC_ID=$(jq -r '.vpc_id.value // empty' $FILE_PATH)
-          NLB_TG_ARN=$(jq -r '.nlb_tg_arn.value // empty' $FILE_PATH)
-
-          # 3. التحقق إن القيم مش فاضية قبل ما نكمل
-          if [ -z "$CLUSTER_NAME" ]; then
-             echo "Error: CLUSTER_NAME is empty or null in JSON!"
-             exit 1
-          fi
-
-          # 4. حفظ في الـ ENV
-          echo "CLUSTER_NAME=$CLUSTER_NAME" >> $GITHUB_ENV
-          echo "VPC_ID=$VPC_ID" >> $GITHUB_ENV
-          echo "NLB_TG_ARN=$NLB_TG_ARN" >> $GITHUB_ENV
-          
-          echo "Final Check - Cluster Name: $CLUSTER_NAME"
-
-          # استخراج البيانات باستخدام jq
-          CLUSTER_NAME=$(jq -r '.cluster_name.value' $FILE_PATH)
-          VPC_ID=$(jq -r '.vpc_id.value' $FILE_PATH)
-          NLB_TG_ARN=$(jq -r '.nlb_tg_arn.value' $FILE_PATH)
-
-          # تصدير للـ GITHUB_ENV لاستخدامها في الخطوات القادمة
-          echo "CLUSTER_NAME=$CLUSTER_NAME" >> $GITHUB_ENV
-          echo "VPC_ID=$VPC_ID" >> $GITHUB_ENV
-          echo "NLB_TG_ARN=$NLB_TG_ARN" >> $GITHUB_ENV
-          
-          echo "Artifact loaded successfully for Cluster: $CLUSTER_NAME"
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -109,16 +75,13 @@ jobs:
 
       - name: Set up kubectl
         uses: azure/setup-kubectl@v4
-        with:
-          version: 'latest'
 
       - name: Set up Helm
         uses: azure/setup-helm@v4
-        with:
-          version: 'latest'
 
       - name: Update kubeconfig
         run: |
+          # هنا بنستخدم ${{ env.CLUSTER_NAME }} اللي اتسيف في الخطوة اللي فاتت
           aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
 
       - name: Create AWS LBC ServiceAccount
