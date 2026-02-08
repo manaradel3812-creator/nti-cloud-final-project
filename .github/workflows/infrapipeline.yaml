@@ -64,6 +64,17 @@ jobs:
           cd ${{ env.TF_DIR }}
           terraform plan -destroy -out=tfplan -input=false -var-file="${{ github.event.inputs.env }}.tfvars"
 
+          - name: Terraform Apply
+  id: terraform_apply
+  run: |
+    cd terraform
+    terraform apply -auto-approve -input=false
+    # Export outputs to GitHub Actions
+    echo "CLUSTER_NAME=$(terraform output -raw cluster_name)" >> $GITHUB_OUTPUT
+    echo "VPC_ID=$(terraform output -raw vpc_id)" >> $GITHUB_OUTPUT
+    echo "NLB_TG_ARN=$(terraform output -raw nlb_tg_arn)" >> $GITHUB_OUTPUT
+
+
       - name: Terraform Apply
         run: |
           set -euo pipefail
