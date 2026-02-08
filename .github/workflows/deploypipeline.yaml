@@ -77,43 +77,49 @@ jobs:
         run: |
           helm repo add eks https://aws.github.io/eks-charts
           helm repo update
-          # تنصيب الـ Controller أولاً
+          # تثبيت الـ Controller مع إعدادات الـ ServiceAccount الصحيحة
           helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
             -n kube-system \
             --set clusterName=${{ env.CLUSTER_NAME }} \
             --set region=${{ env.AWS_REGION }} \
             --set vpcId=${{ env.VPC_ID }} \
+            --set serviceAccount.create=false \
+            --set serviceAccount.name=aws-load-balancer-controller \
+            --set terminationGracePeriodSeconds=0 \
             --timeout 10m
 
-      - name: Force Clean Webhooks & Wait
+      - name: Hard Kill Webhooks & Wait for Controller Pods
         run: |
-          echo "Cleaning up blocking webhooks..."
-          # حذف الـ webhook المسبب للمشكلة تحديداً
+          echo "Force removing blocking webhooks..."
+          # حذف نهائي لكل ما يتعلق بالـ Webhook الخاص بـ AWS الذي يسبب التعليق
           kubectl delete mutatingwebhookconfiguration elbv2.k8s.aws-mutate --ignore-not-found
           kubectl delete validatingwebhookconfiguration elbv2.k8s.aws-validate --ignore-not-found
           kubectl delete validatingwebhookconfiguration aws-load-balancer-webhook --ignore-not-found
           kubectl delete mutatingwebhookconfiguration aws-load-balancer-webhook --ignore-not-found
           
-          echo "Waiting 20 seconds for API Server to realize webhooks are gone..."
-          sleep 20
+          echo "Checking LBC Pods Status..."
+          kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller
+          
+          echo "Waiting 60 seconds for Controller to be fully ready and API Server to update..."
+          sleep 60 
 
       - name: Deploy NGINX Ingress
         run: |
           helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
           helm repo update
-          # إضافة flag لمنع الـ validation مؤقتاً إذا استمرت المشكلة
+          # محاولة التنصيب الآن بعد تنظيف الـ Webhooks والانتظار
           helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
             -n ${{ env.HELM_NAMESPACE_INGRESS }} \
             --create-namespace \
             --version 4.14.3 \
             --set controller.service.type=ClusterIP \
             --set controller.ingressClassResource.name=nginx \
-            --wait --timeout 10m
+            --timeout 15m
 
       - name: Apply TargetGroupBinding
         run: |
           if [ "${{ env.NLB_TG_ARN }}" != "MISSING_ARN" ]; then
-             # انتظر قليلاً لضمان أن الـ CRD الخاص بـ TargetGroupBinding أصبح جاهزاً
+            # انتظر قليلاً لضمان أن الـ CRD الخاص بـ TargetGroupBinding أصبح جاهزاً
             sleep 10
             sed "s|TG_ARN_PLACEHOLDER|${{ env.NLB_TG_ARN }}|g" k8s-config/targetgroup-binding.yaml | kubectl apply -f -
           else
@@ -122,7 +128,6 @@ jobs:
 
       - name: Deploy ArgoCD & External Secrets
         run: |
-          # دمج الخطوات لتقليل وقت البايبلاين
           helm repo add argo https://argoproj.github.io/argo-helm
           helm repo add external-secrets https://charts.external-secrets.io
           helm repo update
