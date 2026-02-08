@@ -48,19 +48,15 @@ jobs:
           cd ${{ env.TF_DIR }}
           terraform init -input=false
 
-      - name: Terraform Plan (Create/Update)
-        if: ${{ github.event.inputs.destroy == 'false' }}
+      - name: Terraform Plan
         run: |
           set -euo pipefail
           cd ${{ env.TF_DIR }}
-          terraform plan -out=tfplan -input=false -var-file="${{ github.event.inputs.env }}.tfvars"
-
-      - name: Terraform Plan Destroy
-        if: ${{ github.event.inputs.destroy == 'true' }}
-        run: |
-          set -euo pipefail
-          cd ${{ env.TF_DIR }}
-          terraform plan -destroy -out=tfplan -input=false -var-file="${{ github.event.inputs.env }}.tfvars"
+          if [ "${{ github.event.inputs.destroy }}" == "true" ]; then
+            terraform plan -destroy -out=tfplan -input=false -var-file="${{ github.event.inputs.env }}.tfvars"
+          else
+            terraform plan -out=tfplan -input=false -var-file="${{ github.event.inputs.env }}.tfvars"
+          fi
 
       - name: Terraform Apply
         run: |
@@ -72,6 +68,7 @@ jobs:
         if: ${{ github.event.inputs.destroy == 'false' }}
         run: |
           cd ${{ env.TF_DIR }}
+          # استخراج كل الـ outputs كما هي في ملفات الـ tf الخاصة بك
           terraform output -json > ../tf-outputs.json
 
       - name: Upload Terraform Outputs Artifact
