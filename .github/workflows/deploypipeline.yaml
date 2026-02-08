@@ -30,41 +30,39 @@ jobs:
         with:
           workflow: infrapipeline.yaml 
           name: terraform-outputs
-          path: ./terraform-output
+          path: .
           search_artifacts: true
           if_no_artifact_found: fail
 
       - name: Set Terraform outputs as environment variables
-        id: set_vars
         run: |
-          # البحث عن الملف في كل الفولدرات المنزلة للتأكد من المسار
-          FILE_PATH=$(find ./terraform-output -name "tf-outputs.json" | head -n 1)
+          # التأكد من وجود الملف في المسار الحالي
+          if [ ! -f "tf-outputs.json" ]; then
+            echo "::error::tf-outputs.json not found in root! Checking subdirectories..."
+            find . -name "tf-outputs.json"
+            exit 1
+          fi
+
+          echo "Found tf-outputs.json. Content:"
+          cat tf-outputs.json
+
+          # استخراج القيم باستخدام jq مع علامة -r للحصول على نص خام (Raw)
+          CLUSTER=$(jq -r '.cluster_name.value // empty' tf-outputs.json)
+          VPC=$(jq -r '.vpc_id.value // empty' tf-outputs.json)
+          TG=$(jq -r '.nlb_tg_arn.value // empty' tf-outputs.json)
+
+          # التحقق من صحة البيانات قبل الاستمرار
+          if [ -z "$CLUSTER" ] || [ "$CLUSTER" == "null" ]; then
+            echo "::error::Failed to parse Cluster Name! Ensure outputs.tf has cluster_name."
+            exit 1
+          fi
+
+          # حفظ القيم في بيئة GitHub Actions
+          echo "CLUSTER_NAME=$CLUSTER" >> $GITHUB_ENV
+          echo "VPC_ID=$VPC" >> $GITHUB_ENV
+          echo "NLB_TG_ARN=$TG" >> $GITHUB_ENV
           
-          if [ -z "$FILE_PATH" ]; then
-            echo "::error::File tf-outputs.json NOT found!"
-            ls -R ./terraform-output
-            exit 1
-          fi
-
-          echo "Found file at: $FILE_PATH"
-          echo "Content of $FILE_PATH:"
-          cat "$FILE_PATH" # دي عشان لو فشل تاني نشوف شكل الـ JSON في الـ Logs
-
-          # استخراج القيم مع التأكد من وجودها
-          CLUSTER_NAME=$(jq -r '.cluster_name.value // empty' "$FILE_PATH")
-          VPC_ID=$(jq -r '.vpc_id.value // empty' "$FILE_PATH")
-          NLB_TG_ARN=$(jq -r '.nlb_tg_arn.value // empty' "$FILE_PATH")
-
-          # التحقق من أن القيم ليست فارغة
-          if [ -z "$CLUSTER_NAME" ] || [ "$CLUSTER_NAME" == "null" ]; then
-            echo "::error::CLUSTER_NAME is null or empty! Check your Terraform outputs."
-            exit 1
-          fi
-
-          # حفظ القيم في بيئة العمل
-          echo "CLUSTER_NAME=$CLUSTER_NAME" >> $GITHUB_ENV
-          echo "VPC_ID=$VPC_ID" >> $GITHUB_ENV
-          echo "NLB_TG_ARN=$NLB_TG_ARN" >> $GITHUB_ENV
+          echo "Successfully loaded variables for Cluster: $CLUSTER"
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -81,7 +79,6 @@ jobs:
 
       - name: Update kubeconfig
         run: |
-          # هنا بنستخدم ${{ env.CLUSTER_NAME }} اللي اتسيف في الخطوة اللي فاتت
           aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
 
       - name: Create AWS LBC ServiceAccount
