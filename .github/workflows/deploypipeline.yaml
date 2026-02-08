@@ -2,7 +2,7 @@ name: Helm Deploy ALB Controller to EKS
 
 on:
   workflow_run:
-    workflows: ["Terraform Pipeline"]  # Must match exactly the workflow name
+    workflows: ["Terraform Pipeline"]
     types:
       - completed
 
@@ -19,7 +19,7 @@ jobs:
       HELM_RELEASE: aws-load-balancer-controller
 
     steps:
-      # 1. Checkout the repository
+      # 1. Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v3
 
@@ -31,33 +31,37 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # 3. Install kubectl (correct action)
+      # 3. Install kubectl
       - name: Install kubectl
         uses: azure/setup-kubectl@v3
         with:
           version: '1.27.3'
 
-      # 4. Install Helm (correct action)
+      # 4. Install Helm
       - name: Install Helm
         uses: azure/setup-helm@v3
         with:
           version: '3.12.0'
 
-      # 5. Configure kubeconfig for EKS
+      # 5. Fetch AWS account info (sanity check)
+      - name: Fetch AWS account info
+        run: |
+          aws sts get-caller-identity
+
+      # 6. Configure kubeconfig for EKS
       - name: Configure kubeconfig
         run: |
           echo "Configuring kubeconfig for cluster $CLUSTER_NAME in region $AWS_REGION"
           aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
 
-      # 6. Ensure namespace exists
+      # 7. Ensure namespace exists
       - name: Create Namespace if not exists
         run: |
           kubectl create namespace $HELM_NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
 
-      # 7. Deploy AWS Load Balancer Controller via Helm
+      # 8. Deploy AWS Load Balancer Controller via Helm
       - name: Deploy ALB Controller via Helm
         run: |
-          echo "Deploying AWS Load Balancer Controller"
           helm repo add eks https://aws.github.io/eks-charts
           helm repo update
           helm upgrade --install $HELM_RELEASE eks/aws-load-balancer-controller \
