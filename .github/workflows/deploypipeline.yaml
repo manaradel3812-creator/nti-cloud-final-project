@@ -1,149 +1,138 @@
-name: Deploy Platform
+trigger: none
 
-on:
-  workflow_dispatch:
-    inputs:
-      env:
-        description: Environment
-        required: true
-        default: nonprod
-        type: choice
-        options:
-          - nonprod
-          - prod
+parameters:
+- name: env
+  displayName: Environment
+  type: string
+  default: nonprod
+  values:
+    - nonprod
+    - prod
 
-env:
+variables:
   AWS_REGION: us-east-1
+  CLUSTER_NAME: ${{ parameters.env }}-eks
+  HELM_NAMESPACE: kube-system
+  SERVICE_ACCOUNT: aws-load-balancer-controller
+  HELM_RELEASE: aws-load-balancer-controller
 
-jobs:
-  deploy:
-    name: Deploy Platform Tools
-    runs-on: self-hosted   # نفس aws-self-hosted runner
+stages:
+- stage: Deploy_Platform
+  displayName: Deploy Platform Tools
+  jobs:
+  - job: Helm_EKS
+    displayName: Install Platform on EKS
+    pool:
+      vmImage: ubuntu-latest
+
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    - checkout: self
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+    # kubectl
+    - task: KubectlInstaller@0
+      inputs:
+        versionSpec: 'latest'
 
-      - name: Get Infrastructure Info
-        id: info
-        shell: bash
-        run: |
+    # helm
+    - task: HelmInstaller@1
+      inputs:
+        helmVersionToInstall: 'latest'
+
+    # kubeconfig
+    - task: AWSShellScript@1
+      displayName: Configure kubeconfig
+      inputs:
+        awsCredentials: manar          # AWS Service Connection
+        regionName: $(AWS_REGION)
+        scriptType: inline
+        inlineScript: |
+          aws eks update-kubeconfig \
+            --name $(CLUSTER_NAME) \
+            --region $(AWS_REGION)
+
+    # Service Account + IRSA
+    - task: AWSShellScript@1
+      displayName: Create IRSA Service Account
+      inputs:
+        awsCredentials: manar
+        regionName: $(AWS_REGION)
+        scriptType: inline
+        inlineScript: |
           set -euo pipefail
 
-          echo "Fetching infrastructure information for environment: ${{ inputs.env }}"
+          kubectl create serviceaccount $(SERVICE_ACCOUNT) \
+            -n $(HELM_NAMESPACE) \
+            --dry-run=client -o yaml | kubectl apply -f -
 
-          CANDIDATE_CLUSTER="${{ inputs.env }}-eks"
-          if aws eks describe-cluster --name "${CANDIDATE_CLUSTER}" >/dev/null 2>&1; then
-            CLUSTER_NAME=${CANDIDATE_CLUSTER}
-          else
-            echo "Cluster ${CANDIDATE_CLUSTER} not found. Falling back..."
-            CLUSTER_NAME=$(aws eks list-clusters --query 'clusters[0]' --output text)
-          fi
-          echo "Detected Cluster: ${CLUSTER_NAME}"
+          ROLE_ARN=$(aws iam get-role \
+            --role-name $(CLUSTER_NAME)-aws_load_balancer_controller-irsa \
+            --query Role.Arn --output text)
 
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          kubectl annotate serviceaccount $(SERVICE_ACCOUNT) \
+            eks.amazonaws.com/role-arn=$ROLE_ARN \
+            -n $(HELM_NAMESPACE) --overwrite
 
-          TG_NAME="${{ inputs.env }}-nlb-tg"
-          NLB_TG_ARN=$(aws elbv2 describe-target-groups \
-            --names "${TG_NAME}" \
-            --query "TargetGroups[0].TargetGroupArn" \
-            --output text 2>/dev/null || true)
-
-          if [[ -z "${NLB_TG_ARN}" || "${NLB_TG_ARN}" == "None" ]]; then
-            echo "Searching for any TG containing 'nlb-tg'..."
-            NLB_TG_ARN=$(aws elbv2 describe-target-groups \
-              --query "TargetGroups[?contains(TargetGroupName, 'nlb-tg')].TargetGroupArn" \
-              --output text | head -1)
-          fi
-
-          if [[ -z "${NLB_TG_ARN}" || "${NLB_TG_ARN}" == "None" ]]; then
-            echo "ERROR: Could not find NLB Target Group"
-            exit 1
-          fi
-
-          VPC_ID=$(aws ec2 describe-vpcs --query "Vpcs[0].VpcId" --output text)
-
-          aws eks update-kubeconfig --region $AWS_REGION --name ${CLUSTER_NAME}
-
-          echo "account_id=${ACCOUNT_ID}" >> $GITHUB_OUTPUT
-          echo "cluster_name=${CLUSTER_NAME}" >> $GITHUB_OUTPUT
-          echo "nlb_tg_arn=${NLB_TG_ARN}" >> $GITHUB_OUTPUT
-          echo "vpc_id=${VPC_ID}" >> $GITHUB_OUTPUT
-
-      - name: Add Helm Repos
-        run: |
+    # AWS Load Balancer Controller
+    - task: AWSShellScript@1
+      displayName: Install AWS Load Balancer Controller
+      inputs:
+        awsCredentials: manar
+        regionName: $(AWS_REGION)
+        scriptType: inline
+        inlineScript: |
           helm repo add eks https://aws.github.io/eks-charts
-          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
-          helm repo add argo https://argoproj.github.io/argo-helm
-          helm repo add external-secrets https://charts.external-secrets.io
           helm repo update
 
-      - name: Create AWS LBC ServiceAccount
-        run: |
-          sed "s|ROLE_ARN_PLACEHOLDER|arn:aws:iam::${{ steps.info.outputs.account_id }}:role/${{ steps.info.outputs.cluster_name }}-aws_load_balancer_controller-irsa|g" \
-            k8s-config/aws-lbc-serviceaccount.yaml | kubectl apply -f -
-
-      - name: Deploy AWS Load Balancer Controller
-        run: |
-          helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
-            -n kube-system \
-            --set clusterName=${{ steps.info.outputs.cluster_name }} \
+          helm upgrade --install $(HELM_RELEASE) eks/aws-load-balancer-controller \
+            -n $(HELM_NAMESPACE) \
+            --set clusterName=$(CLUSTER_NAME) \
             --set serviceAccount.create=false \
-            --set serviceAccount.name=aws-load-balancer-controller \
-            --set region=${{ env.AWS_REGION }} \
-            --set vpcId=${{ steps.info.outputs.vpc_id }} \
-            --timeout 10m
+            --set serviceAccount.name=$(SERVICE_ACCOUNT)
 
-      - name: Disable AWS LBC Validating Webhook
-        run: |
-          kubectl delete validatingwebhookconfiguration aws-load-balancer-webhook --ignore-not-found
+    # NGINX Ingress
+    - task: AWSShellScript@1
+      displayName: Install NGINX Ingress
+      inputs:
+        awsCredentials: manar
+        regionName: $(AWS_REGION)
+        scriptType: inline
+        inlineScript: |
+          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+          helm repo update
 
-      - name: Deploy NGINX Ingress
-        run: |
           helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
             -n ingress-nginx \
             --create-namespace \
-            --version 4.14.3 \
-            --set controller.service.type=ClusterIP \
-            --set controller.ingressClassResource.name=nginx \
-            --timeout 10m
+            --set controller.service.type=ClusterIP
 
-      - name: Verify ingress-nginx controller
-        run: |
-          kubectl -n ingress-nginx get pods
-          kubectl -n ingress-nginx wait \
-            --for=condition=Available deployment/ingress-nginx-controller \
-            --timeout=10m
+    # ArgoCD
+    - task: AWSShellScript@1
+      displayName: Install ArgoCD
+      inputs:
+        awsCredentials: manar
+        regionName: $(AWS_REGION)
+        scriptType: inline
+        inlineScript: |
+          helm repo add argo https://argoproj.github.io/argo-helm
+          helm repo update
 
-      - name: Apply TargetGroupBinding
-        run: |
-          sed "s|TG_ARN_PLACEHOLDER|${{ steps.info.outputs.nlb_tg_arn }}|g" \
-            k8s-config/targetgroup-binding.yaml | kubectl apply -f -
-
-          kubectl -n ingress-nginx get targetgroupbinding ingress-nlb-tgb -o wide
-
-      - name: Deploy ArgoCD
-        run: |
           helm upgrade --install argocd argo/argo-cd \
             -n argocd \
             --create-namespace \
-            --set server.service.type=ClusterIP \
-            --timeout 10m
+            --set server.service.type=ClusterIP
 
-      - name: Deploy External Secrets
-        run: |
+    # External Secrets
+    - task: AWSShellScript@1
+      displayName: Install External Secrets
+      inputs:
+        awsCredentials: manar
+        regionName: $(AWS_REGION)
+        scriptType: inline
+        inlineScript: |
+          helm repo add external-secrets https://charts.external-secrets.io
+          helm repo update
+
           helm upgrade --install external-secrets external-secrets/external-secrets \
             -n external-secrets \
             --create-namespace \
-            --set installCRDs=true \
-            --timeout 10m
-
-      - name: Apply Platform Ingress
-        run: |
-          kubectl apply -f k8s-config/platform-ingress.yaml
+            --set installCRDs=true
