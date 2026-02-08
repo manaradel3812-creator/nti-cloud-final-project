@@ -1,138 +1,27 @@
-trigger: none
+name: Workflow Name
 
-parameters:
-- name: env
-  displayName: Environment
-  type: string
-  default: nonprod
-  values:
-    - nonprod
-    - prod
+on: 
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "Environment"
+        required: true
+        default: nonprod
+      destroy:
+        description: "Destroy infrastructure?"
+        required: true
+        default: false
 
-variables:
+env:
   AWS_REGION: us-east-1
-  CLUSTER_NAME: ${{ parameters.env }}-eks
-  HELM_NAMESPACE: kube-system
-  SERVICE_ACCOUNT: aws-load-balancer-controller
-  HELM_RELEASE: aws-load-balancer-controller
+  TF_DIR: terraform
 
-stages:
-- stage: Deploy_Platform
-  displayName: Deploy Platform Tools
-  jobs:
-  - job: Helm_EKS
-    displayName: Install Platform on EKS
-    pool:
-      vmImage: ubuntu-latest
-
+jobs:
+  job_name:
+    runs-on: ubuntu-latest
     steps:
-    - checkout: self
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    # kubectl
-    - task: KubectlInstaller@0
-      inputs:
-        versionSpec: 'latest'
-
-    # helm
-    - task: HelmInstaller@1
-      inputs:
-        helmVersionToInstall: 'latest'
-
-    # kubeconfig
-    - task: AWSShellScript@1
-      displayName: Configure kubeconfig
-      inputs:
-        awsCredentials: manar          # AWS Service Connection
-        regionName: $(AWS_REGION)
-        scriptType: inline
-        inlineScript: |
-          aws eks update-kubeconfig \
-            --name $(CLUSTER_NAME) \
-            --region $(AWS_REGION)
-
-    # Service Account + IRSA
-    - task: AWSShellScript@1
-      displayName: Create IRSA Service Account
-      inputs:
-        awsCredentials: manar
-        regionName: $(AWS_REGION)
-        scriptType: inline
-        inlineScript: |
-          set -euo pipefail
-
-          kubectl create serviceaccount $(SERVICE_ACCOUNT) \
-            -n $(HELM_NAMESPACE) \
-            --dry-run=client -o yaml | kubectl apply -f -
-
-          ROLE_ARN=$(aws iam get-role \
-            --role-name $(CLUSTER_NAME)-aws_load_balancer_controller-irsa \
-            --query Role.Arn --output text)
-
-          kubectl annotate serviceaccount $(SERVICE_ACCOUNT) \
-            eks.amazonaws.com/role-arn=$ROLE_ARN \
-            -n $(HELM_NAMESPACE) --overwrite
-
-    # AWS Load Balancer Controller
-    - task: AWSShellScript@1
-      displayName: Install AWS Load Balancer Controller
-      inputs:
-        awsCredentials: manar
-        regionName: $(AWS_REGION)
-        scriptType: inline
-        inlineScript: |
-          helm repo add eks https://aws.github.io/eks-charts
-          helm repo update
-
-          helm upgrade --install $(HELM_RELEASE) eks/aws-load-balancer-controller \
-            -n $(HELM_NAMESPACE) \
-            --set clusterName=$(CLUSTER_NAME) \
-            --set serviceAccount.create=false \
-            --set serviceAccount.name=$(SERVICE_ACCOUNT)
-
-    # NGINX Ingress
-    - task: AWSShellScript@1
-      displayName: Install NGINX Ingress
-      inputs:
-        awsCredentials: manar
-        regionName: $(AWS_REGION)
-        scriptType: inline
-        inlineScript: |
-          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
-          helm repo update
-
-          helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
-            -n ingress-nginx \
-            --create-namespace \
-            --set controller.service.type=ClusterIP
-
-    # ArgoCD
-    - task: AWSShellScript@1
-      displayName: Install ArgoCD
-      inputs:
-        awsCredentials: manar
-        regionName: $(AWS_REGION)
-        scriptType: inline
-        inlineScript: |
-          helm repo add argo https://argoproj.github.io/argo-helm
-          helm repo update
-
-          helm upgrade --install argocd argo/argo-cd \
-            -n argocd \
-            --create-namespace \
-            --set server.service.type=ClusterIP
-
-    # External Secrets
-    - task: AWSShellScript@1
-      displayName: Install External Secrets
-      inputs:
-        awsCredentials: manar
-        regionName: $(AWS_REGION)
-        scriptType: inline
-        inlineScript: |
-          helm repo add external-secrets https://charts.external-secrets.io
-          helm repo update
-
-          helm upgrade --install external-secrets external-secrets/external-secrets \
-            -n external-secrets \
-            --create-namespace \
-            --set installCRDs=true
+      - name: Some step
+        run: echo "Hello"
