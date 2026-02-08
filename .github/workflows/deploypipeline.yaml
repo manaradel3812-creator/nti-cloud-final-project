@@ -1,4 +1,4 @@
-name: Terraform + Helm Deploy Pipeline
+name: Helm Deploy Pipeline
 
 on:
   workflow_dispatch:
@@ -11,123 +11,105 @@ on:
         options:
           - nonprod
           - prod
-      destroy:
-        description: 'Destroy Infrastructure?'
-        required: true
-        default: 'false'
-        type: boolean
 
 env:
-  TF_DIR: terraform
   AWS_REGION: us-east-1
-  TF_VERSION: '1.5.7'
+  HELM_NAMESPACE_INGRESS: ingress-nginx
+  HELM_NAMESPACE_ARGOCD: argocd
+  HELM_NAMESPACE_ES: external-secrets
 
 jobs:
-  terraform:
-    name: Terraform Apply/Destroy
+  deploy-helm:
+    name: Deploy Platform with Helm
     runs-on: ubuntu-latest
+    needs: terraform  # لو نفس repo workflow run dependent
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
-
-      - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v2
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
+        uses: actions/checkout@v4
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Terraform Init
-        run: |
-          cd ${{ env.TF_DIR }}
-          terraform init -input=false
-
-      - name: Terraform Plan
-        if: ${{ github.event.inputs.destroy == 'false' }}
-        run: |
-          cd ${{ env.TF_DIR }}
-          terraform plan -out=tfplan -input=false -var-file="${{ github.event.inputs.env }}.tfvars"
-
-      - name: Terraform Apply
-        if: ${{ github.event.inputs.destroy == 'false' }}
-        run: |
-          cd ${{ env.TF_DIR }}
-          terraform apply -auto-approve tfplan
-
-  deploy-helm:
-    name: Deploy Platform Tools
-    runs-on: ubuntu-latest
-    needs: terraform
-    if: ${{ github.event.inputs.destroy == 'false' }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
-      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Set kubeconfig
-        run: |
-          CLUSTER_NAME="${{ github.event.inputs.env }}-eks"
-          aws eks update-kubeconfig --region $AWS_REGION --name $CLUSTER_NAME
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
 
-      - name: Add Helm Repos
+      - name: Set up Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: 'latest'
+
+      - name: Update kubeconfig
         run: |
-          helm repo add eks https://aws.github.io/eks-charts
-          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
-          helm repo add argo https://argoproj.github.io/argo-helm
-          helm repo add external-secrets https://charts.external-secrets.io
-          helm repo update
+          set -euo pipefail
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ steps.terraform_apply.outputs.CLUSTER_NAME }}
 
       - name: Create AWS LBC ServiceAccount
         run: |
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          CLUSTER_NAME="${{ github.event.inputs.env }}-eks"
-          sed "s|ROLE_ARN_PLACEHOLDER|arn:aws:iam::$ACCOUNT_ID:role/${CLUSTER_NAME}-aws_load_balancer_controller-irsa|g" \
-            k8s-config/aws-lbc-serviceaccount.yaml | kubectl apply -f -
+          set -euo pipefail
+          ROLE_ARN=$(aws iam get-role --role-name ${{ steps.terraform_apply.outputs.CLUSTER_NAME }}-aws_load_balancer_controller-irsa --query Role.Arn --output text)
+          sed "s|ROLE_ARN_PLACEHOLDER|$ROLE_ARN|g" k8s-config/aws-lbc-serviceaccount.yaml | kubectl apply -f -
 
       - name: Deploy AWS Load Balancer Controller
         run: |
+          helm repo add eks https://aws.github.io/eks-charts
+          helm repo update
           helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
             -n kube-system \
-            --set clusterName=$CLUSTER_NAME \
+            --set clusterName=${{ steps.terraform_apply.outputs.CLUSTER_NAME }} \
             --set serviceAccount.create=false \
             --set serviceAccount.name=aws-load-balancer-controller \
-            --set region=$AWS_REGION \
-            --set vpcId=$(aws ec2 describe-vpcs --query "Vpcs[0].VpcId" --output text) \
+            --set region=${{ env.AWS_REGION }} \
+            --set vpcId=${{ steps.terraform_apply.outputs.VPC_ID }} \
             --timeout 10m
+
+      - name: Disable AWS LBC Validating Webhook
+        run: |
+          kubectl delete validatingwebhookconfiguration aws-load-balancer-webhook --ignore-not-found
 
       - name: Deploy NGINX Ingress
         run: |
+          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+          helm repo update
           helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
-            -n ingress-nginx \
+            -n ${HELM_NAMESPACE_INGRESS} \
             --create-namespace \
             --version 4.14.3 \
             --set controller.service.type=ClusterIP \
             --set controller.ingressClassResource.name=nginx \
             --timeout 10m
 
+      - name: Wait for Ingress Controller
+        run: |
+          kubectl -n ${HELM_NAMESPACE_INGRESS} wait \
+            --for=condition=Available deployment/ingress-nginx-controller \
+            --timeout=10m
+
+      - name: Apply TargetGroupBinding
+        run: |
+          sed "s|TG_ARN_PLACEHOLDER|${{ steps.terraform_apply.outputs.NLB_TG_ARN }}|g" k8s-config/targetgroup-binding.yaml | kubectl apply -f -
+
       - name: Deploy ArgoCD
         run: |
+          helm repo add argo https://argoproj.github.io/argo-helm
+          helm repo update
           helm upgrade --install argocd argo/argo-cd \
-            -n argocd \
+            -n ${HELM_NAMESPACE_ARGOCD} \
             --create-namespace \
             --set server.service.type=ClusterIP \
             --timeout 10m
 
       - name: Deploy External Secrets
         run: |
+          helm repo add external-secrets https://charts.external-secrets.io
+          helm repo update
           helm upgrade --install external-secrets external-secrets/external-secrets \
-            -n external-secrets \
+            -n ${HELM_NAMESPACE_ES} \
             --create-namespace \
             --set installCRDs=true \
             --timeout 10m
