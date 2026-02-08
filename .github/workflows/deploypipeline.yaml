@@ -77,7 +77,6 @@ jobs:
         run: |
           helm repo add eks https://aws.github.io/eks-charts
           helm repo update
-          # تثبيت الـ Controller مع إعدادات الـ ServiceAccount الصحيحة
           helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
             -n kube-system \
             --set clusterName=${{ env.CLUSTER_NAME }} \
@@ -91,23 +90,27 @@ jobs:
       - name: Hard Kill Webhooks & Wait for Controller Pods
         run: |
           echo "Force removing blocking webhooks..."
-          # حذف نهائي لكل ما يتعلق بالـ Webhook الخاص بـ AWS الذي يسبب التعليق
           kubectl delete mutatingwebhookconfiguration elbv2.k8s.aws-mutate --ignore-not-found
           kubectl delete validatingwebhookconfiguration elbv2.k8s.aws-validate --ignore-not-found
           kubectl delete validatingwebhookconfiguration aws-load-balancer-webhook --ignore-not-found
           kubectl delete mutatingwebhookconfiguration aws-load-balancer-webhook --ignore-not-found
           
-          echo "Checking LBC Pods Status..."
+          echo "Waiting 60 seconds for Controller to be fully ready..."
+          sleep 60 
+
+      - name: Debug AWS LBC Pods
+        run: |
+          echo "Checking if LBC Pods are running..."
           kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller
           
-          echo "Waiting 60 seconds for Controller to be fully ready and API Server to update..."
-          sleep 60 
+          echo "Checking Service Endpoints..."
+          # هذا السطر سيكشف لنا إذا كان هناك IP مربوط بالخدمة أم لا
+          kubectl get endpoints -n kube-system aws-load-balancer-webhook-service
 
       - name: Deploy NGINX Ingress
         run: |
           helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
           helm repo update
-          # محاولة التنصيب الآن بعد تنظيف الـ Webhooks والانتظار
           helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
             -n ${{ env.HELM_NAMESPACE_INGRESS }} \
             --create-namespace \
@@ -119,7 +122,6 @@ jobs:
       - name: Apply TargetGroupBinding
         run: |
           if [ "${{ env.NLB_TG_ARN }}" != "MISSING_ARN" ]; then
-            # انتظر قليلاً لضمان أن الـ CRD الخاص بـ TargetGroupBinding أصبح جاهزاً
             sleep 10
             sed "s|TG_ARN_PLACEHOLDER|${{ env.NLB_TG_ARN }}|g" k8s-config/targetgroup-binding.yaml | kubectl apply -f -
           else
@@ -131,7 +133,6 @@ jobs:
           helm repo add argo https://argoproj.github.io/argo-helm
           helm repo add external-secrets https://charts.external-secrets.io
           helm repo update
-          
           helm upgrade --install argocd argo/argo-cd -n ${{ env.HELM_NAMESPACE_ARGOCD }} --create-namespace --set server.service.type=ClusterIP
           helm upgrade --install external-secrets external-secrets/external-secrets -n ${{ env.HELM_NAMESPACE_ES }} --create-namespace --set installCRDs=true
 
