@@ -25,12 +25,11 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      # الخطوة الأهم: سحب الـ Artifact من بايبلاين التيرارفورم
+      # تم تعديل اسم الـ workflow ليتطابق مع اسم الملف الفعلي عندك
       - name: Download Terraform outputs artifact
         uses: dawidd6/action-download-artifact@v3
         with:
-          # ملاحظة: تأكد أن "terraform.yml" هو اسم ملف الـ YAML الخاص بالـ Terraform في فولدر workflows
-          workflow: terraform.yml 
+          workflow: infrapipeline.yaml 
           name: terraform-outputs
           path: ./terraform-output
           search_artifacts: true
@@ -39,24 +38,24 @@ jobs:
       - name: Set Terraform outputs as environment variables
         id: set_vars
         run: |
-          # قراءة الملف المستخرج من الأرتيفاكت
           FILE_PATH="./terraform-output/tf-outputs.json"
           
           if [ ! -f "$FILE_PATH" ]; then
-            echo "Error: tf-outputs.json not found!"
+            echo "Error: tf-outputs.json not found in the downloaded artifact!"
             exit 1
           fi
 
+          # استخراج البيانات باستخدام jq
           CLUSTER_NAME=$(jq -r '.cluster_name.value' $FILE_PATH)
           VPC_ID=$(jq -r '.vpc_id.value' $FILE_PATH)
           NLB_TG_ARN=$(jq -r '.nlb_tg_arn.value' $FILE_PATH)
 
-          # تصدير القيم لبيئة عمل GitHub Actions
+          # تصدير للـ GITHUB_ENV لاستخدامها في الخطوات القادمة
           echo "CLUSTER_NAME=$CLUSTER_NAME" >> $GITHUB_ENV
           echo "VPC_ID=$VPC_ID" >> $GITHUB_ENV
           echo "NLB_TG_ARN=$NLB_TG_ARN" >> $GITHUB_ENV
           
-          echo "Detected Cluster: $CLUSTER_NAME"
+          echo "Artifact loaded successfully for Cluster: $CLUSTER_NAME"
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -81,7 +80,6 @@ jobs:
 
       - name: Create AWS LBC ServiceAccount
         run: |
-          # استخراج الـ Role ARN ديناميكياً بناءً على اسم الكلاستر
           ROLE_ARN=$(aws iam get-role --role-name ${{ env.CLUSTER_NAME }}-aws_load_balancer_controller-irsa --query Role.Arn --output text)
           sed "s|ROLE_ARN_PLACEHOLDER|$ROLE_ARN|g" k8s-config/aws-lbc-serviceaccount.yaml | kubectl apply -f -
 
@@ -122,7 +120,6 @@ jobs:
 
       - name: Apply TargetGroupBinding
         run: |
-          # استبدال الـ ARN الخاص بالـ NLB في ملف الـ YAML
           sed "s|TG_ARN_PLACEHOLDER|${{ env.NLB_TG_ARN }}|g" k8s-config/targetgroup-binding.yaml | kubectl apply -f -
 
       - name: Deploy ArgoCD
