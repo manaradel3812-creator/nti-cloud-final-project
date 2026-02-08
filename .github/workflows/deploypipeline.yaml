@@ -11,6 +11,15 @@ on:
         options:
           - nonprod
           - prod
+      cluster_name:
+        description: 'EKS Cluster Name (from Terraform output)'
+        required: true
+      vpc_id:
+        description: 'VPC ID (from Terraform output)'
+        required: true
+      nlb_tg_arn:
+        description: 'NLB Target Group ARN (from Terraform output)'
+        required: true
 
 env:
   AWS_REGION: us-east-1
@@ -22,7 +31,6 @@ jobs:
   deploy-helm:
     name: Deploy Platform with Helm
     runs-on: ubuntu-latest
-    needs: terraform  # لو نفس repo workflow run dependent
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -47,12 +55,12 @@ jobs:
       - name: Update kubeconfig
         run: |
           set -euo pipefail
-          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ steps.terraform_apply.outputs.CLUSTER_NAME }}
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ github.event.inputs.cluster_name }}
 
       - name: Create AWS LBC ServiceAccount
         run: |
           set -euo pipefail
-          ROLE_ARN=$(aws iam get-role --role-name ${{ steps.terraform_apply.outputs.CLUSTER_NAME }}-aws_load_balancer_controller-irsa --query Role.Arn --output text)
+          ROLE_ARN=$(aws iam get-role --role-name ${{ github.event.inputs.cluster_name }}-aws_load_balancer_controller-irsa --query Role.Arn --output text)
           sed "s|ROLE_ARN_PLACEHOLDER|$ROLE_ARN|g" k8s-config/aws-lbc-serviceaccount.yaml | kubectl apply -f -
 
       - name: Deploy AWS Load Balancer Controller
@@ -61,11 +69,11 @@ jobs:
           helm repo update
           helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
             -n kube-system \
-            --set clusterName=${{ steps.terraform_apply.outputs.CLUSTER_NAME }} \
+            --set clusterName=${{ github.event.inputs.cluster_name }} \
             --set serviceAccount.create=false \
             --set serviceAccount.name=aws-load-balancer-controller \
             --set region=${{ env.AWS_REGION }} \
-            --set vpcId=${{ steps.terraform_apply.outputs.VPC_ID }} \
+            --set vpcId=${{ github.event.inputs.vpc_id }} \
             --timeout 10m
 
       - name: Disable AWS LBC Validating Webhook
@@ -92,7 +100,7 @@ jobs:
 
       - name: Apply TargetGroupBinding
         run: |
-          sed "s|TG_ARN_PLACEHOLDER|${{ steps.terraform_apply.outputs.NLB_TG_ARN }}|g" k8s-config/targetgroup-binding.yaml | kubectl apply -f -
+          sed "s|TG_ARN_PLACEHOLDER|${{ github.event.inputs.nlb_tg_arn }}|g" k8s-config/targetgroup-binding.yaml | kubectl apply -f -
 
       - name: Deploy ArgoCD
         run: |
