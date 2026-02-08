@@ -24,6 +24,8 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          submodules: false # حل مشكلة الـ fatal: No url found
 
       - name: Download Terraform outputs artifact
         uses: dawidd6/action-download-artifact@v3
@@ -71,81 +73,62 @@ jobs:
         run: |
           aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
 
-      - name: Create AWS LBC ServiceAccount
-        run: |
-          ROLE_ARN=$(aws iam get-role --role-name ${{ env.CLUSTER_NAME }}-aws_load_balancer_controller-irsa --query Role.Arn --output text || echo "ROLE_NOT_FOUND")
-          if [ "$ROLE_ARN" != "ROLE_NOT_FOUND" ]; then
-            sed "s|ROLE_ARN_PLACEHOLDER|$ROLE_ARN|g" k8s-config/aws-lbc-serviceaccount.yaml | kubectl apply -f -
-          fi
-
       - name: Deploy AWS Load Balancer Controller
         run: |
           helm repo add eks https://aws.github.io/eks-charts
           helm repo update
+          # تنصيب الـ Controller أولاً
           helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
             -n kube-system \
             --set clusterName=${{ env.CLUSTER_NAME }} \
-            --set serviceAccount.create=false \
-            --set serviceAccount.name=aws-load-balancer-controller \
             --set region=${{ env.AWS_REGION }} \
             --set vpcId=${{ env.VPC_ID }} \
             --timeout 10m
 
-      - name: Force Clean AWS LBC Webhooks
+      - name: Force Clean Webhooks & Wait
         run: |
-          # مسح الـ Webhooks اللي بتعطل الدنيا لو الـ Controller لسه مش جاهز
           echo "Cleaning up blocking webhooks..."
+          # حذف الـ webhook المسبب للمشكلة تحديداً
+          kubectl delete mutatingwebhookconfiguration elbv2.k8s.aws-mutate --ignore-not-found
+          kubectl delete validatingwebhookconfiguration elbv2.k8s.aws-validate --ignore-not-found
           kubectl delete validatingwebhookconfiguration aws-load-balancer-webhook --ignore-not-found
           kubectl delete mutatingwebhookconfiguration aws-load-balancer-webhook --ignore-not-found
-          kubectl delete validatingwebhookconfiguration elbv2.k8s.aws-validate --ignore-not-found
-          kubectl delete mutatingwebhookconfiguration elbv2.k8s.aws-mutate --ignore-not-found
+          
+          echo "Waiting 20 seconds for API Server to realize webhooks are gone..."
+          sleep 20
 
       - name: Deploy NGINX Ingress
         run: |
           helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
           helm repo update
-          # تثبيت Nginx مع تجاهل الـ Webhooks المعطلة
+          # إضافة flag لمنع الـ validation مؤقتاً إذا استمرت المشكلة
           helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
             -n ${{ env.HELM_NAMESPACE_INGRESS }} \
             --create-namespace \
             --version 4.14.3 \
             --set controller.service.type=ClusterIP \
             --set controller.ingressClassResource.name=nginx \
-            --timeout 10m
-
-      - name: Wait for Ingress Controller
-        run: |
-          kubectl -n ${{ env.HELM_NAMESPACE_INGRESS }} wait \
-            --for=condition=Available deployment/ingress-nginx-controller \
-            --timeout=10m
+            --wait --timeout 10m
 
       - name: Apply TargetGroupBinding
         run: |
           if [ "${{ env.NLB_TG_ARN }}" != "MISSING_ARN" ]; then
+             # انتظر قليلاً لضمان أن الـ CRD الخاص بـ TargetGroupBinding أصبح جاهزاً
+            sleep 10
             sed "s|TG_ARN_PLACEHOLDER|${{ env.NLB_TG_ARN }}|g" k8s-config/targetgroup-binding.yaml | kubectl apply -f -
           else
             echo "⚠️ Skipping TargetGroupBinding: ARN missing."
           fi
 
-      - name: Deploy ArgoCD
+      - name: Deploy ArgoCD & External Secrets
         run: |
+          # دمج الخطوات لتقليل وقت البايبلاين
           helm repo add argo https://argoproj.github.io/argo-helm
-          helm repo update
-          helm upgrade --install argocd argo/argo-cd \
-            -n ${{ env.HELM_NAMESPACE_ARGOCD }} \
-            --create-namespace \
-            --set server.service.type=ClusterIP \
-            --timeout 10m
-
-      - name: Deploy External Secrets
-        run: |
           helm repo add external-secrets https://charts.external-secrets.io
           helm repo update
-          helm upgrade --install external-secrets external-secrets/external-secrets \
-            -n ${{ env.HELM_NAMESPACE_ES }} \
-            --create-namespace \
-            --set installCRDs=true \
-            --timeout 10m
+          
+          helm upgrade --install argocd argo/argo-cd -n ${{ env.HELM_NAMESPACE_ARGOCD }} --create-namespace --set server.service.type=ClusterIP
+          helm upgrade --install external-secrets external-secrets/external-secrets -n ${{ env.HELM_NAMESPACE_ES }} --create-namespace --set installCRDs=true
 
       - name: Apply Platform Ingress
         run: |
