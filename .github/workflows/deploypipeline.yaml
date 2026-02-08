@@ -1,69 +1,77 @@
 name: Helm Deploy ALB Controller to EKS
 
 on:
-  workflow_run:
-    workflows: ["Terraform Pipeline"]
-    types:
-      - completed
+  workflow_dispatch:
 
 jobs:
   deploy-alb:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
 
     env:
-      CLUSTER_NAME: my-eks-cluster
-      AWS_REGION: us-east-1
       HELM_NAMESPACE: kube-system
       SERVICE_ACCOUNT: aws-load-balancer-controller
       HELM_RELEASE: aws-load-balancer-controller
 
     steps:
-      # 1. Checkout repository
+      # 1️⃣ Checkout repo
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      # 2. Configure AWS credentials
+      # 2️⃣ Configure AWS credentials
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: us-east-1
 
-      # 3. Install kubectl
+      # 3️⃣ Install Terraform
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      # 4️⃣ Terraform init (no apply – just outputs)
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init
+
+      # 5️⃣ Read Terraform outputs
+      - name: Read Terraform outputs
+        working-directory: terraform
+        run: |
+          echo "CLUSTER_NAME=$(terraform output -raw eks_cluster_name)" >> $GITHUB_ENV
+          echo "AWS_REGION=$(terraform output -raw aws_region)" >> $GITHUB_ENV
+
+      # 6️⃣ Install kubectl
       - name: Install kubectl
         uses: azure/setup-kubectl@v3
         with:
           version: '1.27.3'
 
-      # 4. Install Helm
+      # 7️⃣ Install Helm
       - name: Install Helm
         uses: azure/setup-helm@v3
         with:
           version: '3.12.0'
 
-      # 5. Fetch AWS account info (sanity check)
-      - name: Fetch AWS account info
-        run: |
-          aws sts get-caller-identity
-
-      # 6. Configure kubeconfig for EKS
+      # 8️⃣ Configure kubeconfig
       - name: Configure kubeconfig
         run: |
-          echo "Configuring kubeconfig for cluster $CLUSTER_NAME in region $AWS_REGION"
-          aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
+          aws eks update-kubeconfig \
+            --name $CLUSTER_NAME \
+            --region $AWS_REGION
 
-      # 7. Ensure namespace exists
-      - name: Create Namespace if not exists
+      # 9️⃣ Ensure namespace exists
+      - name: Ensure namespace
         run: |
-          kubectl create namespace $HELM_NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create namespace $HELM_NAMESPACE \
+            --dry-run=client -o yaml | kubectl apply -f -
 
-      # 8. Deploy AWS Load Balancer Controller via Helm
-      - name: Deploy ALB Controller via Helm
+      # 🔟 Deploy ALB Controller
+      - name: Deploy AWS Load Balancer Controller
         run: |
           helm repo add eks https://aws.github.io/eks-charts
           helm repo update
+
           helm upgrade --install $HELM_RELEASE eks/aws-load-balancer-controller \
             -n $HELM_NAMESPACE \
             --set clusterName=$CLUSTER_NAME \
