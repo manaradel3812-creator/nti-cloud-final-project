@@ -11,15 +11,6 @@ on:
         options:
           - nonprod
           - prod
-      cluster_name:
-        description: 'EKS Cluster Name (from Terraform output)'
-        required: true
-      vpc_id:
-        description: 'VPC ID (from Terraform output)'
-        required: true
-      nlb_tg_arn:
-        description: 'NLB Target Group ARN (from Terraform output)'
-        required: true
 
 env:
   AWS_REGION: us-east-1
@@ -29,11 +20,27 @@ env:
 
 jobs:
   deploy-helm:
-    name: Deploy Platform with Helm
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v4
+
+      - name: Download Terraform outputs artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: terraform-outputs
+          path: ./terraform-output
+
+      - name: Set Terraform outputs as environment variables
+        id: set_vars
+        run: |
+          export CLUSTER_NAME=$(jq -r '.cluster_name.value' ./terraform-output/tf-outputs.json)
+          export VPC_ID=$(jq -r '.vpc_id.value' ./terraform-output/tf-outputs.json)
+          export NLB_TG_ARN=$(jq -r '.nlb_tg_arn.value' ./terraform-output/tf-outputs.json)
+
+          echo "CLUSTER_NAME=$CLUSTER_NAME" >> $GITHUB_ENV
+          echo "VPC_ID=$VPC_ID" >> $GITHUB_ENV
+          echo "NLB_TG_ARN=$NLB_TG_ARN" >> $GITHUB_ENV
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -54,13 +61,11 @@ jobs:
 
       - name: Update kubeconfig
         run: |
-          set -euo pipefail
-          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ github.event.inputs.cluster_name }}
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name $CLUSTER_NAME
 
       - name: Create AWS LBC ServiceAccount
         run: |
-          set -euo pipefail
-          ROLE_ARN=$(aws iam get-role --role-name ${{ github.event.inputs.cluster_name }}-aws_load_balancer_controller-irsa --query Role.Arn --output text)
+          ROLE_ARN=$(aws iam get-role --role-name $CLUSTER_NAME-aws_load_balancer_controller-irsa --query Role.Arn --output text)
           sed "s|ROLE_ARN_PLACEHOLDER|$ROLE_ARN|g" k8s-config/aws-lbc-serviceaccount.yaml | kubectl apply -f -
 
       - name: Deploy AWS Load Balancer Controller
@@ -69,11 +74,11 @@ jobs:
           helm repo update
           helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
             -n kube-system \
-            --set clusterName=${{ github.event.inputs.cluster_name }} \
+            --set clusterName=$CLUSTER_NAME \
             --set serviceAccount.create=false \
             --set serviceAccount.name=aws-load-balancer-controller \
-            --set region=${{ env.AWS_REGION }} \
-            --set vpcId=${{ github.event.inputs.vpc_id }} \
+            --set region=$AWS_REGION \
+            --set vpcId=$VPC_ID \
             --timeout 10m
 
       - name: Disable AWS LBC Validating Webhook
@@ -85,7 +90,7 @@ jobs:
           helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
           helm repo update
           helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
-            -n ${HELM_NAMESPACE_INGRESS} \
+            -n $HELM_NAMESPACE_INGRESS \
             --create-namespace \
             --version 4.14.3 \
             --set controller.service.type=ClusterIP \
@@ -94,20 +99,20 @@ jobs:
 
       - name: Wait for Ingress Controller
         run: |
-          kubectl -n ${HELM_NAMESPACE_INGRESS} wait \
+          kubectl -n $HELM_NAMESPACE_INGRESS wait \
             --for=condition=Available deployment/ingress-nginx-controller \
             --timeout=10m
 
       - name: Apply TargetGroupBinding
         run: |
-          sed "s|TG_ARN_PLACEHOLDER|${{ github.event.inputs.nlb_tg_arn }}|g" k8s-config/targetgroup-binding.yaml | kubectl apply -f -
+          sed "s|TG_ARN_PLACEHOLDER|$NLB_TG_ARN|g" k8s-config/targetgroup-binding.yaml | kubectl apply -f -
 
       - name: Deploy ArgoCD
         run: |
           helm repo add argo https://argoproj.github.io/argo-helm
           helm repo update
           helm upgrade --install argocd argo/argo-cd \
-            -n ${HELM_NAMESPACE_ARGOCD} \
+            -n $HELM_NAMESPACE_ARGOCD \
             --create-namespace \
             --set server.service.type=ClusterIP \
             --timeout 10m
@@ -117,7 +122,7 @@ jobs:
           helm repo add external-secrets https://charts.external-secrets.io
           helm repo update
           helm upgrade --install external-secrets external-secrets/external-secrets \
-            -n ${HELM_NAMESPACE_ES} \
+            -n $HELM_NAMESPACE_ES \
             --create-namespace \
             --set installCRDs=true \
             --timeout 10m
