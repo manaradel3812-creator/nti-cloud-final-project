@@ -5,18 +5,18 @@ metadata:
   name: {{ .Release.Name }}
   namespace: {{ .Release.Namespace }}
   annotations:
-    # 👇 ALB Controller annotations
-    kubernetes.io/ingress.class: {{ .Values.ingress.className | default "alb" }}
-    alb.ingress.kubernetes.io/scheme: {{ .Values.ingress.scheme | default "internet-facing" }}
-    alb.ingress.kubernetes.io/target-type: {{ .Values.ingress.targetType | default "ip" }}
-    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    # إحنا شيلنا كل الـ alb.ingress annotations لأن الـ NGINX مش بيفهمها
+    # الـ NGINX controller هو اللي بيفهم السطر اللي جاي ده:
+    kubernetes.io/ingress.class: {{ .Values.ingress.className | default "nginx" }}
     {{- range $key, $value := .Values.ingress.annotations }}
     {{ $key }}: {{ $value | quote }}
     {{- end }}
 spec:
+  # السطر ده مهم جداً في النسخ الجديدة من Kubernetes
+  ingressClassName: {{ .Values.ingress.className | default "nginx" }}
   rules:
     {{- range .Values.ingress.hosts }}
-    - host: {{ .host }}
+    - host: {{ .host | quote }}
       http:
         paths:
           {{- range .paths }}

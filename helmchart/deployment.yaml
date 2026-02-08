@@ -2,6 +2,8 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ .Release.Name }}
+  # 💡 ضفت الـ namespace عشان نضمن إنه ينزل في المكان الصح
+  namespace: {{ .Release.Namespace | default "default" }} 
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
@@ -17,3 +19,11 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           ports:
             - containerPort: 80
+          # 👇 الجزء ده "إجباري" للـ Fargate عشان الـ Pod ما يفضلش Pending
+          resources:
+            requests:
+              cpu: "256m"
+              memory: "512Mi"
+            limits:
+              cpu: "256m"
+              memory: "512Mi"

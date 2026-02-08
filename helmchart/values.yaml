@@ -5,21 +5,17 @@ image:
   tag: latest
 
 service:
-  type: LoadBalancer
+  type: ClusterIP  # 👈 لازم يكون داخلي عشان الـ NGINX هو اللي يكلمه
   port: 80
 
 ingress:
   enabled: true
-  className: alb
-  scheme: internet-facing          # optional, used in ingress.yaml
-  targetType: ip                   # recommended for pods
+  className: nginx  # 👈 لازم يكون nginx عشان البوابة (NGINX) تلقطه
   annotations:
-    alb.ingress.kubernetes.io/scheme: internet-facing
-    alb.ingress.kubernetes.io/target-type: ip
-    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
-    external-dns.alpha.kubernetes.io/hostname: myapp.example.com
+    # مش محتاجين annotations بتاعة AWS هنا لأنها موجودة في الـ Controller نفسه
+    kubernetes.io/ingress.class: "nginx"
   hosts:
-    - host: myapp.example.com
+    - host: ""  # لو معندكيش دومين حقيقي سيبيه فاضي والـ NLB هيشتغل بالـ DNS بتاعه
       paths:
         - path: /
           pathType: Prefix

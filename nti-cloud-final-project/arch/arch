@@ -1,8 +1,0 @@
-├── providers.tf       # تعريف الـ AWS والـ Backend (S3)
-├── vpc.tf             # كل ما يخص الشبكة (Subnets, Gateway, Route Tables)
-├── eks_cluster.tf     # تعريف الـ EKS Control Plane
-├── eks_nodes.tf       # تعريف الـ Fargate & Managed Node Groups
-├── iam.tf             # الأدوار (Roles) والصلاحيات اللازمة للـ EKS والـ Nodes
-├── variables.tf       # تعريف المتغيرات
-├── terraform.tfvars   # قيم المتغيرات (عشان تفصلي الـ Prod عن الـ Non-prod)
-└── outputs.tf         # النتائج اللي محتاجة تشوفيها (Endpoint, Cluster Name)

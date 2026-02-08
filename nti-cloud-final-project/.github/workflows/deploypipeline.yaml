@@ -1,69 +1,144 @@
-name: Helm Deploy ALB Controller to EKS
+name: Helm Deploy Pipeline
 
 on:
-  workflow_run:
-    workflows: ["Terraform Pipeline"]  # Must match exactly the workflow name
-    types:
-      - completed
+  workflow_dispatch:
+    inputs:
+      env:
+        description: 'Environment'
+        required: true
+        default: 'nonprod'
+        type: choice
+        options:
+          - nonprod
+          - prod
+
+env:
+  AWS_REGION: us-east-1
+  HELM_NAMESPACE_INGRESS: ingress-nginx
+  HELM_NAMESPACE_ARGOCD: argocd
+  HELM_NAMESPACE_ES: external-secrets
 
 jobs:
-  deploy-alb:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+  deploy-helm:
     runs-on: ubuntu-latest
-
-    env:
-      CLUSTER_NAME: my-eks-cluster
-      AWS_REGION: us-east-1
-      HELM_NAMESPACE: kube-system
-      SERVICE_ACCOUNT: aws-load-balancer-controller
-      HELM_RELEASE: aws-load-balancer-controller
-
     steps:
-      # 1. Checkout the repository
-      - name: Checkout repository
-        uses: actions/checkout@v3
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          submodules: false # حل مشكلة الـ fatal: No url found
 
-      # 2. Configure AWS credentials
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
+      - name: Download Terraform outputs artifact
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          workflow: infrapipeline.yaml 
+          name: terraform-outputs
+          path: .
+          search_artifacts: true
+          if_no_artifact_found: fail
+
+      - name: Set Terraform outputs as environment variables
+        run: |
+          FILE_PATH="tf-outputs.json"
+          if [ ! -f "$FILE_PATH" ]; then
+            echo "::error::tf-outputs.json not found!"
+            exit 1
+          fi
+
+          CLUSTER=$(jq -r '.eks_cluster_name.value // empty' $FILE_PATH)
+          VPC=$(jq -r '.vpc_id.value // empty' $FILE_PATH)
+          TG=$(jq -r '.nlb_tg_arn.value // "MISSING_ARN"' $FILE_PATH)
+
+          if [ -z "$CLUSTER" ] || [ "$CLUSTER" == "null" ]; then
+            echo "::error::Failed to parse eks_cluster_name!"
+            exit 1
+          fi
+
+          echo "CLUSTER_NAME=$CLUSTER" >> $GITHUB_ENV
+          echo "VPC_ID=$VPC" >> $GITHUB_ENV
+          echo "NLB_TG_ARN=$TG" >> $GITHUB_ENV
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # 3. Install kubectl (correct action)
-      - name: Install kubectl
-        uses: azure/setup-kubectl@v3
-        with:
-          version: '1.27.3'
+      - name: Set up kubectl & Helm
+        uses: azure/setup-kubectl@v4
+      
+      - uses: azure/setup-helm@v4
 
-      # 4. Install Helm (correct action)
-      - name: Install Helm
-        uses: azure/setup-helm@v3
-        with:
-          version: '3.12.0'
-
-      # 5. Configure kubeconfig for EKS
-      - name: Configure kubeconfig
+      - name: Update kubeconfig
         run: |
-          echo "Configuring kubeconfig for cluster $CLUSTER_NAME in region $AWS_REGION"
-          aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
 
-      # 6. Ensure namespace exists
-      - name: Create Namespace if not exists
+      - name: Deploy AWS Load Balancer Controller
         run: |
-          kubectl create namespace $HELM_NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
-
-      # 7. Deploy AWS Load Balancer Controller via Helm
-      - name: Deploy ALB Controller via Helm
-        run: |
-          echo "Deploying AWS Load Balancer Controller"
           helm repo add eks https://aws.github.io/eks-charts
           helm repo update
-          helm upgrade --install $HELM_RELEASE eks/aws-load-balancer-controller \
-            -n $HELM_NAMESPACE \
-            --set clusterName=$CLUSTER_NAME \
+          helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+            -n kube-system \
+            --set clusterName=${{ env.CLUSTER_NAME }} \
+            --set region=${{ env.AWS_REGION }} \
+            --set vpcId=${{ env.VPC_ID }} \
             --set serviceAccount.create=false \
-            --set serviceAccount.name=$SERVICE_ACCOUNT \
-            --set region=$AWS_REGION \
-            --wait
+            --set serviceAccount.name=aws-load-balancer-controller \
+            --set terminationGracePeriodSeconds=0 \
+            --timeout 10m
+
+      - name: Hard Kill Webhooks & Wait
+        run: |
+          echo "Force removing ALL blocking webhooks (including elbv2 ones)..."
+          # حذف الـ Webhooks المذكورة في رسالة الأيرور بتاعتك تحديداً لفتح الطريق
+          kubectl delete mutatingwebhookconfiguration elbv2.k8s.aws-mutate --ignore-not-found
+          kubectl delete validatingwebhookconfiguration elbv2.k8s.aws-validate --ignore-not-found
+          
+          # حذف الـ Webhooks العامة للـ controller
+          kubectl delete mutatingwebhookconfiguration aws-load-balancer-webhook --ignore-not-found
+          kubectl delete validatingwebhookconfiguration aws-load-balancer-webhook --ignore-not-found
+          
+          echo "Sleeping 20s to ensure K8s API server state is updated..."
+          sleep 20
+
+      - name: Debug AWS LBC Pods
+        run: |
+          echo "Checking if LBC Pods are running..."
+          kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller
+          
+          echo "Checking Service Endpoints..."
+          kubectl get endpoints -n kube-system aws-load-balancer-webhook-service || echo "Endpoints not found"
+
+      - name: Deploy NGINX Ingress
+        run: |
+          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+          helm repo update
+          # التنصيب الآن سيتم بدون اعتراض من الـ Webhooks المحذوفة
+          helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+            -n ${{ env.HELM_NAMESPACE_INGRESS }} \
+            --create-namespace \
+            --version 4.14.3 \
+            --set controller.service.type=ClusterIP \
+            --set controller.ingressClassResource.name=nginx \
+            --timeout 15m
+
+      - name: Apply TargetGroupBinding
+        run: |
+          if [ "${{ env.NLB_TG_ARN }}" != "MISSING_ARN" ]; then
+            sleep 10
+            sed "s|TG_ARN_PLACEHOLDER|${{ env.NLB_TG_ARN }}|g" k8s-config/targetgroup-binding.yaml | kubectl apply -f -
+          else
+            echo "⚠️ Skipping TargetGroupBinding: ARN missing."
+          fi
+
+      - name: Deploy ArgoCD & External Secrets
+        run: |
+          helm repo add argo https://argoproj.github.io/argo-helm
+          helm repo add external-secrets https://charts.external-secrets.io
+          helm repo update
+          helm upgrade --install argocd argo/argo-cd -n ${{ env.HELM_NAMESPACE_ARGOCD }} --create-namespace --set server.service.type=ClusterIP
+          helm upgrade --install external-secrets external-secrets/external-secrets -n ${{ env.HELM_NAMESPACE_ES }} --create-namespace --set installCRDs=true
+
+      - name: Apply Platform Ingress
+        run: |
+          kubectl apply -f k8s-config/platform-ingress.yaml

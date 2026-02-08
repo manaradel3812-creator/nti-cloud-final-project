@@ -8,6 +8,12 @@ output "eks_cluster_arn" { value = aws_eks_cluster.main.arn }
 
 output "eks_node_group_name" { value = aws_eks_node_group.main.node_group_name }
 output "fargate_profile_name" { value = aws_eks_fargate_profile.default.fargate_profile_name }
+
 output "cognito_user_pool_id" { value = aws_cognito_user_pool.main.id }
 output "cognito_user_pool_client_id" { value = aws_cognito_user_pool_client.main.id }
 output "cognito_user_pool_domain" { value = aws_cognito_user_pool_domain.main.domain }
+
+# 👇 الأجزاء اللي كانت ناقصة ومهمة للـ Pipeline
+output "lbc_iam_role_arn" { 
+  value = aws_iam_role.lbc_irsa.arn 
+}

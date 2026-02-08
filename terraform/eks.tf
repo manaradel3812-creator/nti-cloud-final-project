@@ -44,7 +44,18 @@ resource "aws_eks_fargate_profile" "default" {
   pod_execution_role_arn = aws_iam_role.eks_fargate_role.arn
   subnet_ids             = aws_subnet.private[*].id
 
+  # السماح للـ Default namespace لعمل التطبيقات العادية
   selector { namespace = "default" }
+
+  # السماح للـ kube-system عشان الـ Controller والـ CoreDNS يقوموا
+  selector { namespace = "kube-system" }
+
+  # السماح لـ ingress-nginx عشان الـ Load Balancer يشتغل
+  selector { namespace = "ingress-nginx" }
+
+  # السماح لـ ArgoCD والـ External Secrets
+  selector { namespace = "argocd" }
+  selector { namespace = "external-secrets" }
 
   depends_on = [aws_eks_cluster.main]
 }
