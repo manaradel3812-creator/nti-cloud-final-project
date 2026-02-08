@@ -4,23 +4,28 @@ metadata:
   name: platform-ingress
   namespace: ingress-nginx
   annotations:
-    # إحنا بنقول للـ NGINX إنه هو اللي يدير الـ Ingress ده
+    # إخبار الكلاستر إن NGINX هو المسؤول عن هذا الـ Ingress
     kubernetes.io/ingress.class: "nginx"
+    # تحويل الـ HTTP لـ HTTPS (لو ركبتي شهادة مستقبلاً)
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    # زيادة وقت الانتظار للعمليات الطويلة في ArgoCD و Nexus
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
 spec:
   ingressClassName: nginx
   rules:
     - http:
         paths:
-          # 1️⃣ الـ Endpoint بتاع الأبلكيشن الأساسي
+          # 1️⃣ الأبلكيشن بتاعك (الـ Hello App)
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: my-app-service # إسم السيرفس بتاعك
+                name: hello-app-service # تأكدي إن ده نفس إسم الـ Service في الـ Helm
                 port:
                   number: 80
 
-          # 2️⃣ الـ Endpoint بتاع ArgoCD (كمثال)
+          # 2️⃣ واجهة ArgoCD
           - path: /argocd
             pathType: Prefix
             backend:
@@ -28,3 +33,12 @@ spec:
                 name: argocd-server
                 port:
                   number: 80
+
+          # 3️⃣ واجهة Nexus (مثال لو ضفتيه)
+          - path: /nexus
+            pathType: Prefix
+            backend:
+              service:
+                name: nexus-service
+                port:
+                  number: 8081
