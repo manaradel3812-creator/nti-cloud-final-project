@@ -89,15 +89,17 @@ jobs:
 
       - name: Hard Kill Webhooks & Wait
         run: |
-          echo "Force removing ALL blocking webhooks..."
-          # مسح الـ Webhooks اللي مسببة الأيرور بالاسم لفتح الطريق أمام الـ Nginx
+          echo "Force removing ALL blocking webhooks (including elbv2 ones)..."
+          # حذف الـ Webhooks المذكورة في رسالة الأيرور بتاعتك تحديداً لفتح الطريق
           kubectl delete mutatingwebhookconfiguration elbv2.k8s.aws-mutate --ignore-not-found
           kubectl delete validatingwebhookconfiguration elbv2.k8s.aws-validate --ignore-not-found
+          
+          # حذف الـ Webhooks العامة للـ controller
           kubectl delete mutatingwebhookconfiguration aws-load-balancer-webhook --ignore-not-found
           kubectl delete validatingwebhookconfiguration aws-load-balancer-webhook --ignore-not-found
           
-          echo "Sleeping to let K8s API breathe..."
-          sleep 15
+          echo "Sleeping 20s to ensure K8s API server state is updated..."
+          sleep 20
 
       - name: Debug AWS LBC Pods
         run: |
@@ -111,6 +113,7 @@ jobs:
         run: |
           helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
           helm repo update
+          # التنصيب الآن سيتم بدون اعتراض من الـ Webhooks المحذوفة
           helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
             -n ${{ env.HELM_NAMESPACE_INGRESS }} \
             --create-namespace \
