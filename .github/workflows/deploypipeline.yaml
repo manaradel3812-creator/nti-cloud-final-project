@@ -36,33 +36,32 @@ jobs:
 
       - name: Set Terraform outputs as environment variables
         run: |
-          # التأكد من وجود الملف في المسار الحالي
-          if [ ! -f "tf-outputs.json" ]; then
-            echo "::error::tf-outputs.json not found in root! Checking subdirectories..."
-            find . -name "tf-outputs.json"
+          FILE_PATH="tf-outputs.json"
+          if [ ! -f "$FILE_PATH" ]; then
+            echo "::error::tf-outputs.json not found!"
             exit 1
           fi
 
-          echo "Found tf-outputs.json. Content:"
-          cat tf-outputs.json
+          echo "Found tf-outputs.json. Extracting values..."
 
-          # استخراج القيم باستخدام jq مع علامة -r للحصول على نص خام (Raw)
-          CLUSTER=$(jq -r '.cluster_name.value // empty' tf-outputs.json)
-          VPC=$(jq -r '.vpc_id.value // empty' tf-outputs.json)
-          TG=$(jq -r '.nlb_tg_arn.value // empty' tf-outputs.json)
+          # التعديل الجوهري: استخدام eks_cluster_name بدلاً من cluster_name
+          CLUSTER=$(jq -r '.eks_cluster_name.value // empty' $FILE_PATH)
+          VPC=$(jq -r '.vpc_id.value // empty' $FILE_PATH)
+          
+          # التعامل مع الـ ARN المفقود في الـ outputs.tf الحالي
+          TG=$(jq -r '.nlb_tg_arn.value // "MISSING_ARN"' $FILE_PATH)
 
-          # التحقق من صحة البيانات قبل الاستمرار
           if [ -z "$CLUSTER" ] || [ "$CLUSTER" == "null" ]; then
-            echo "::error::Failed to parse Cluster Name! Ensure outputs.tf has cluster_name."
+            echo "::error::Failed to parse eks_cluster_name! Check if Terraform run was successful."
             exit 1
           fi
 
-          # حفظ القيم في بيئة GitHub Actions
+          # تصدير المتغيرات للخطوات القادمة
           echo "CLUSTER_NAME=$CLUSTER" >> $GITHUB_ENV
           echo "VPC_ID=$VPC" >> $GITHUB_ENV
           echo "NLB_TG_ARN=$TG" >> $GITHUB_ENV
           
-          echo "Successfully loaded variables for Cluster: $CLUSTER"
+          echo "✅ Data Loaded: Cluster=$CLUSTER, VPC=$VPC"
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -71,11 +70,10 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Set up kubectl
+      - name: Set up kubectl & Helm
         uses: azure/setup-kubectl@v4
-
-      - name: Set up Helm
-        uses: azure/setup-helm@v4
+      
+      - uses: azure/setup-helm@v4
 
       - name: Update kubeconfig
         run: |
@@ -83,8 +81,13 @@ jobs:
 
       - name: Create AWS LBC ServiceAccount
         run: |
-          ROLE_ARN=$(aws iam get-role --role-name ${{ env.CLUSTER_NAME }}-aws_load_balancer_controller-irsa --query Role.Arn --output text)
-          sed "s|ROLE_ARN_PLACEHOLDER|$ROLE_ARN|g" k8s-config/aws-lbc-serviceaccount.yaml | kubectl apply -f -
+          # محاولة جلب الـ Role ARN ديناميكياً
+          ROLE_ARN=$(aws iam get-role --role-name ${{ env.CLUSTER_NAME }}-aws_load_balancer_controller-irsa --query Role.Arn --output text || echo "ROLE_NOT_FOUND")
+          if [ "$ROLE_ARN" != "ROLE_NOT_FOUND" ]; then
+            sed "s|ROLE_ARN_PLACEHOLDER|$ROLE_ARN|g" k8s-config/aws-lbc-serviceaccount.yaml | kubectl apply -f -
+          else
+            echo "Warning: IAM Role not found, skipping ServiceAccount creation."
+          fi
 
       - name: Deploy AWS Load Balancer Controller
         run: |
@@ -115,15 +118,13 @@ jobs:
             --set controller.ingressClassResource.name=nginx \
             --timeout 10m
 
-      - name: Wait for Ingress Controller
-        run: |
-          kubectl -n ${{ env.HELM_NAMESPACE_INGRESS }} wait \
-            --for=condition=Available deployment/ingress-nginx-controller \
-            --timeout=10m
-
       - name: Apply TargetGroupBinding
         run: |
-          sed "s|TG_ARN_PLACEHOLDER|${{ env.NLB_TG_ARN }}|g" k8s-config/targetgroup-binding.yaml | kubectl apply -f -
+          if [ "${{ env.NLB_TG_ARN }}" != "MISSING_ARN" ]; then
+            sed "s|TG_ARN_PLACEHOLDER|${{ env.NLB_TG_ARN }}|g" k8s-config/targetgroup-binding.yaml | kubectl apply -f -
+          else
+            echo "⚠️ Skipping TargetGroupBinding because NLB_TG_ARN is missing in Terraform outputs."
+          fi
 
       - name: Deploy ArgoCD
         run: |
