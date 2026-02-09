@@ -1,0 +1,223 @@
+name: Platform Deploy Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: 'Environment'
+        required: true
+        default: 'nonprod'
+        type: choice
+        options:
+          - nonprod
+          - prod
+
+env:
+  AWS_REGION: us-east-1
+  HELM_NAMESPACE_INGRESS: ingress-nginx
+  HELM_NAMESPACE_ARGOCD: argocd
+  HELM_NAMESPACE_ES: external-secrets
+  # إضافة الـ Namespaces الجديدة هنا
+  HELM_NAMESPACE_NEXUS: nexus
+  HELM_NAMESPACE_SONAR: sonarqube
+
+jobs:
+  deploy-platform:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          submodules: false 
+
+      - name: Download Terraform outputs
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          workflow: infrapipeline.yaml 
+          name: terraform-outputs
+          path: .
+          search_artifacts: true
+
+      - name: Set Terraform outputs as environment variables
+        run: |
+          FILE_PATH="tf-outputs.json"
+          if [ ! -f "$FILE_PATH" ]; then echo "::error::tf-outputs.json missing!"; exit 1; fi
+          CLUSTER=$(jq -r '.eks_cluster_name.value' $FILE_PATH)
+          VPC=$(jq -r '.vpc_id.value' $FILE_PATH)
+          LBC_ROLE=$(jq -r '.lbc_iam_role_arn.value // empty' $FILE_PATH)
+          echo "CLUSTER_NAME=$CLUSTER" >> $GITHUB_ENV
+          echo "VPC_ID=$VPC" >> $GITHUB_ENV
+          echo "LBC_IAM_ROLE_ARN=$LBC_ROLE" >> $GITHUB_ENV
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set up kubectl & Helm
+        uses: azure/setup-kubectl@v4
+      
+      - uses: azure/setup-helm@v4
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+
+      - name: Clean up broken webhooks (Safe)
+        run: |
+          echo "Cleaning up any old webhooks to prevent conflicts..."
+          kubectl delete mutatingwebhookconfiguration elbv2.k8s.aws-mutate --ignore-not-found
+          kubectl delete validatingwebhookconfiguration elbv2.k8s.aws-validate --ignore-not-found
+
+      - name: Create AWS LBC ServiceAccount
+        run: |
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: aws-load-balancer-controller
+            namespace: kube-system
+            annotations:
+              eks.amazonaws.com/role-arn: ${{ env.LBC_IAM_ROLE_ARN }}
+          EOF
+
+      - name: Deploy AWS Load Balancer Controller
+        run: |
+          helm repo add eks https://aws.github.io/eks-charts
+          helm repo update
+          helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+            -n kube-system \
+            --set clusterName=${{ env.CLUSTER_NAME }} \
+            --set region=${{ env.AWS_REGION }} \
+            --set vpcId=${{ env.VPC_ID }} \
+            --set serviceAccount.create=false \
+            --set serviceAccount.name=aws-load-balancer-controller \
+            --set resources.requests.cpu=256m \
+            --set resources.requests.memory=512Mi \
+            --set resources.limits.cpu=256m \
+            --set resources.limits.memory=512Mi
+
+      - name: Wait for LBC Controller
+        run: |
+          echo "Waiting for pods to be ready..."
+          kubectl rollout status deployment/aws-load-balancer-controller -n kube-system --timeout=300s
+
+      - name: Deploy NGINX Ingress (Auto-NLB)
+        run: |
+          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+          helm repo update
+          helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+            -n ${{ env.HELM_NAMESPACE_INGRESS }} \
+            --create-namespace \
+            --set controller.service.type=LoadBalancer \
+            --set controller.service.annotations."service\.beta\.kubernetes\.io/aws-load-balancer-type"="external" \
+            --set controller.service.annotations."service\.beta\.kubernetes\.io/aws-load-balancer-nlb-target-type"="ip" \
+            --set controller.service.annotations."service\.beta\.kubernetes\.io/aws-load-balancer-scheme"="internet-facing"
+
+      - name: Deploy ArgoCD
+        run: |
+          helm repo add argo https://argoproj.github.io/argo-helm
+          helm repo update
+          helm upgrade --install argocd argo/argo-cd -n ${{ env.HELM_NAMESPACE_ARGOCD }} --create-namespace --set server.service.type=ClusterIP
+
+      # --- بداية الإضافات الجديدة للمرحلة الثالثة ---
+      
+      - name: Deploy Nexus Repository
+        run: |
+          helm repo add sonatype https://sonatype.github.io/helm3-charts/
+          helm repo update
+          helm upgrade --install nexus sonatype/nexus-repository-manager \
+            -n ${{ env.HELM_NAMESPACE_NEXUS }} \
+            --create-namespace \
+            --set nexus.service.type=ClusterIP
+
+      
+      - name: Deploy SonarQube
+        run: |
+          # 1. إضافة المستودع الرسمي الجديد (تم تحديث الرابط)
+          helm repo add sonarqube https://charts.sonarqube.org
+          helm repo update
+          
+          # 2. التثبيت مع إعدادات الـ Resources المناسبة للـ EKS
+          helm upgrade --install sonarqube sonarqube/sonarqube \
+            -n ${{ env.HELM_NAMESPACE_SONAR }} \
+            --create-namespace \
+            --set service.type=ClusterIP \
+            --set persistence.enabled=true \
+            --set initSysctl.enabled=true
+    
+      # --- نهاية الإضافات الجديدة ---
+
+      - name: Apply Unified Platform Ingress
+        run: |
+          echo "Creating Ingress manifest directory in helmchart..."
+          mkdir -p helmchart
+          
+          echo "Writing platform-ingress.yaml with Nexus and SonarQube paths..."
+          cat <<EOF > helmchart/ingress.yaml
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: platform-ingress
+            namespace: ingress-nginx
+            annotations:
+              kubernetes.io/ingress.class: "nginx"
+              nginx.ingress.kubernetes.io/ssl-redirect: "false"
+              nginx.ingress.kubernetes.io/proxy-body-size: "512m"
+              nginx.ingress.kubernetes.io/rewrite-target: /
+          spec:
+            ingressClassName: nginx
+            rules:
+              - http:
+                  paths:
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: hello-app-service
+                          port:
+                            number: 80
+                    - path: /argocd
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: argocd-server
+                          port:
+                            number: 80
+                    - path: /nexus
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: nexus-repository-manager
+                          port:
+                            number: 8081
+                    - path: /sonar
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: sonarqube-sonarqube
+                          port:
+                            number: 9000
+          EOF
+          
+          echo "Waiting 30s for NGINX to stabilize..."
+          sleep 30
+          
+          echo "Applying Ingress from helmchart path..."
+          kubectl apply -f helmchart/ingress.yaml
+
+      - name: 🚀 Final Deployment Summary
+        run: |
+          echo "===================================================="
+          echo "✅ DEPLOYMENT FINISHED SUCCESSFULLY!"
+          echo "===================================================="
+          echo "🔗 Your LoadBalancer DNS:"
+          kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+          echo -e "\n"
+          echo "🔐 ArgoCD Initial Password:"
+          kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
+          echo -e "\n"
+          echo "🛠️  Nexus Namespace: ${{ env.HELM_NAMESPACE_NEXUS }}"
+          echo "🛡️  SonarQube Namespace: ${{ env.HELM_NAMESPACE_SONAR }}"
+          echo "===================================================="

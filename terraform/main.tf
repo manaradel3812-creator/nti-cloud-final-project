@@ -119,19 +119,52 @@ resource "aws_route_table_association" "private" {
   route_table_id = aws_route_table.private.id
 }
 
+# # ======================
+# # Cognito User Pool
+# # ======================
+# resource "aws_cognito_user_pool" "main" {
+#   name = "${var.environment}-user-pool"
+# }
+
+# resource "aws_cognito_user_pool_client" "main" {
+#   name         = "${var.environment}-client"
+#   user_pool_id = aws_cognito_user_pool.main.id
+# }
+
+# resource "aws_cognito_user_pool_domain" "main" {
+#   domain      = "${var.environment}-my-domain"
+#   user_pool_id = aws_cognito_user_pool.main.id
+# }
+
 # ======================
 # Cognito User Pool
 # ======================
 resource "aws_cognito_user_pool" "main" {
   name = "${var.environment}-user-pool"
+  
+  # إضافة سياسة كلمة المرور لتجنب المشاكل عند إنشاء مستخدم
+  password_policy {
+    minimum_length    = 8
+    require_lowercase = true
+    require_numbers   = true
+    require_symbols   = true
+    require_uppercase = true
+  }
 }
 
 resource "aws_cognito_user_pool_client" "main" {
   name         = "${var.environment}-client"
   user_pool_id = aws_cognito_user_pool.main.id
+
+  # السطر القادم هو الأهم ليجعل أمر الـ CLI يعمل معكِ
+  explicit_auth_flows = [
+    "ALLOW_USER_PASSWORD_AUTH",
+    "ALLOW_REFRESH_TOKEN_AUTH",
+    "ALLOW_USER_SRP_AUTH"
+  ]
 }
 
 resource "aws_cognito_user_pool_domain" "main" {
-  domain      = "${var.environment}-my-domain"
+  domain       = "${var.environment}-my-domain-${var.aws_region}" # أضفت الـ region لضمان تفرد الاسم
   user_pool_id = aws_cognito_user_pool.main.id
 }
