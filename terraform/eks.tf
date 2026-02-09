@@ -1,4 +1,23 @@
-# EKS Cluster
+##################################
+# 0️⃣ Kubernetes Provider
+##################################
+data "aws_eks_cluster" "cluster" {
+  name = var.eks_cluster_name
+}
+
+data "aws_eks_cluster_auth" "cluster" {
+  name = var.eks_cluster_name
+}
+
+provider "kubernetes" {
+  host                   = data.aws_eks_cluster.cluster.endpoint
+  cluster_ca_certificate = base64decode(data.aws_eks_cluster.cluster.certificate_authority[0].data)
+  token                  = data.aws_eks_cluster_auth.cluster.token
+}
+
+##################################
+# 1️⃣ EKS Cluster
+##################################
 resource "aws_eks_cluster" "main" {
   name     = var.eks_cluster_name
   role_arn = aws_iam_role.eks_cluster_role.arn
@@ -12,16 +31,18 @@ resource "aws_eks_cluster" "main" {
   depends_on = [aws_iam_role_policy_attachment.eks_policy]
 }
 
-
+##################################
+# 2️⃣ EFS CSI Addon
+##################################
 resource "aws_eks_addon" "efs_csi" {
-  cluster_name               = aws_eks_cluster.main.name
-  addon_name                 = "aws-efs-csi-driver"
-  # 👈 هذا هو السطر الأهم للربط
-  service_account_role_arn   = aws_iam_role.efs_csi_driver.arn 
+  cluster_name             = aws_eks_cluster.main.name
+  addon_name               = "aws-efs-csi-driver"
+  service_account_role_arn = aws_iam_role.efs_csi_driver.arn
 }
 
-
-# Node Group
+##################################
+# 3️⃣ Node Group
+##################################
 resource "aws_eks_node_group" "main" {
   cluster_name    = aws_eks_cluster.main.name
   node_group_name = "managed-nodes"
@@ -45,7 +66,11 @@ resource "aws_eks_node_group" "main" {
     aws_iam_role_policy_attachment.nodes_AmazonEC2ContainerRegistryReadOnly,
   ]
 }
-# الـ Profile الأول: للخدمات الأساسية (الحد الأقصى 5)
+
+##################################
+# 4️⃣ Fargate Profiles
+##################################
+# Profile 1: Default
 resource "aws_eks_fargate_profile" "default" {
   cluster_name           = aws_eks_cluster.main.name
   fargate_profile_name   = "default"
@@ -61,7 +86,7 @@ resource "aws_eks_fargate_profile" "default" {
   depends_on = [aws_eks_cluster.main]
 }
 
-# الـ Profile الثاني: للأدوات المساعدة (DevOps Tools)
+# Profile 2: DevOps Tools
 resource "aws_eks_fargate_profile" "devops_tools" {
   cluster_name           = aws_eks_cluster.main.name
   fargate_profile_name   = "devops-tools"
@@ -73,25 +98,3 @@ resource "aws_eks_fargate_profile" "devops_tools" {
 
   depends_on = [aws_eks_cluster.main]
 }
-# # Fargate Profile
-# resource "aws_eks_fargate_profile" "default" {
-#   cluster_name           = aws_eks_cluster.main.name
-#   fargate_profile_name   = "default"
-#   pod_execution_role_arn = aws_iam_role.eks_fargate_role.arn
-#   subnet_ids             = aws_subnet.private[*].id
-
-#   # السماح للـ Default namespace لعمل التطبيقات العادية
-#   selector { namespace = "default" }
-
-#   # السماح للـ kube-system عشان الـ Controller والـ CoreDNS يقوموا
-#   selector { namespace = "kube-system" }
-
-#   # السماح لـ ingress-nginx عشان الـ Load Balancer يشتغل
-#   selector { namespace = "ingress-nginx" }
-
-#   # السماح لـ ArgoCD والـ External Secrets
-#   selector { namespace = "argocd" }
-#   selector { namespace = "external-secrets" }
-
-#   depends_on = [aws_eks_cluster.main]
-# }

@@ -46,13 +46,13 @@ resource "aws_apigatewayv2_authorizer" "cognito" {
 ##############################
 resource "aws_apigatewayv2_integration" "nlb_integration" {
   # لن يتم الإنشاء إلا إذا وجد الـ Data Source موازن أحمال فعلي
-  count            =  0
-  
+  count = 0
+
   api_id           = aws_apigatewayv2_api.http_api.id
   integration_type = "HTTP_PROXY"
   #integration_uri  = "http://${data.aws_lb.eks_nlb.dns_name}" # ربط ديناميكي بالـ DNS
-  connection_type  = "VPC_LINK"
-  connection_id    = aws_apigatewayv2_vpc_link.vpc_link.id
+  connection_type        = "VPC_LINK"
+  connection_id          = aws_apigatewayv2_vpc_link.vpc_link.id
   payload_format_version = "1.0"
 }
 
@@ -65,11 +65,11 @@ resource "aws_apigatewayv2_route" "default" {
 
   authorization_type = "JWT"
   authorizer_id      = aws_apigatewayv2_authorizer.cognito.id
-  
-  # ضيفي السطر ده للتأكيد (اختياري بس بيساعد في الـ Debugging)
-  authorization_scopes = [] 
 
-  target = null
+  # ضيفي السطر ده للتأكيد (اختياري بس بيساعد في الـ Debugging)
+  authorization_scopes = []
+
+  target     = null
   depends_on = [aws_apigatewayv2_authorizer.cognito]
 }
 

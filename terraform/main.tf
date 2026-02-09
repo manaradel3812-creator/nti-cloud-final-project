@@ -126,7 +126,7 @@ resource "aws_route_table_association" "private" {
 # ======================
 resource "aws_cognito_user_pool" "main" {
   name = "${var.environment}-user-pool"
-  
+
   password_policy {
     minimum_length    = 8
     require_lowercase = true

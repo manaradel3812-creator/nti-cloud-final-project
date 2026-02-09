@@ -13,10 +13,11 @@ resource "aws_efs_file_system" "eks" {
 ##################################
 # 2️⃣ EFS Mount Targets
 ##################################
+# أولًا، نحدد الـ subnets اللي محتاجين نعمل mount target فيها
 locals {
   new_subnets = [
     for s in aws_subnet.private : s.id
-    if !(s.id in ["subnet-03c4b5116d58f774b","subnet-07ffc050eb159c896"])
+    if s.id != "subnet-03c4b5116d58f774b" && s.id != "subnet-07ffc050eb159c896"
   ]
 }
 
@@ -27,7 +28,6 @@ resource "aws_efs_mount_target" "eks" {
   subnet_id       = local.new_subnets[count.index]
   security_groups = [aws_security_group.efs_sg.id]
 }
-
 
 ##################################
 # 3️⃣ Kubernetes StorageClass (EFS CSI)
@@ -49,9 +49,9 @@ resource "kubernetes_storage_class_v1" "efs" {
   volume_binding_mode = "Immediate"
 }
 
-# ==========================================
-# Security Group for EFS
-# ==========================================
+##################################
+# 4️⃣ Security Group for EFS
+##################################
 resource "aws_security_group" "efs_sg" {
   name        = "${var.cluster_name}-efs-sg"
   description = "SG for EFS"
