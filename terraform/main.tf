@@ -30,7 +30,7 @@ resource "aws_subnet" "public" {
 }
 
 # ======================
-# Private Subnets (4 total, across 2 AZs)
+# Private Subnets (4 total)
 # ======================
 resource "aws_subnet" "private" {
   count             = 4
@@ -39,11 +39,11 @@ resource "aws_subnet" "private" {
   availability_zone = element(var.azs, count.index % length(var.azs))
 
   tags = {
-    Name                                         = "${var.environment}-private-${count.index}"
-    Tier                                         = "private"
-    Environment                                  = var.environment
+    Name                                            = "${var.environment}-private-${count.index}"
+    Tier                                            = "private"
+    Environment                                     = var.environment
     "kubernetes.io/cluster/${var.eks_cluster_name}" = "shared"
-    "kubernetes.io/role/internal-elb"           = "1"
+    "kubernetes.io/role/internal-elb"               = "1"
   }
 }
 
@@ -87,6 +87,7 @@ resource "aws_route_table_association" "public" {
 # ======================
 resource "aws_eip" "nat" {
   domain = "vpc"
+  tags   = { Name = "${var.environment}-nat-eip" }
 }
 
 resource "aws_nat_gateway" "main" {
@@ -94,6 +95,7 @@ resource "aws_nat_gateway" "main" {
   subnet_id     = aws_subnet.public[0].id
 
   depends_on = [aws_internet_gateway.main]
+  tags       = { Name = "${var.environment}-nat-gw" }
 }
 
 # ======================
@@ -119,30 +121,12 @@ resource "aws_route_table_association" "private" {
   route_table_id = aws_route_table.private.id
 }
 
-# # ======================
-# # Cognito User Pool
-# # ======================
-# resource "aws_cognito_user_pool" "main" {
-#   name = "${var.environment}-user-pool"
-# }
-
-# resource "aws_cognito_user_pool_client" "main" {
-#   name         = "${var.environment}-client"
-#   user_pool_id = aws_cognito_user_pool.main.id
-# }
-
-# resource "aws_cognito_user_pool_domain" "main" {
-#   domain      = "${var.environment}-my-domain"
-#   user_pool_id = aws_cognito_user_pool.main.id
-# }
-
 # ======================
 # Cognito User Pool
 # ======================
 resource "aws_cognito_user_pool" "main" {
   name = "${var.environment}-user-pool"
   
-  # إضافة سياسة كلمة المرور لتجنب المشاكل عند إنشاء مستخدم
   password_policy {
     minimum_length    = 8
     require_lowercase = true
@@ -156,7 +140,6 @@ resource "aws_cognito_user_pool_client" "main" {
   name         = "${var.environment}-client"
   user_pool_id = aws_cognito_user_pool.main.id
 
-  # السطر القادم هو الأهم ليجعل أمر الـ CLI يعمل معكِ
   explicit_auth_flows = [
     "ALLOW_USER_PASSWORD_AUTH",
     "ALLOW_REFRESH_TOKEN_AUTH",
@@ -165,6 +148,6 @@ resource "aws_cognito_user_pool_client" "main" {
 }
 
 resource "aws_cognito_user_pool_domain" "main" {
-  domain       = "${var.environment}-my-domain-${var.aws_region}" # أضفت الـ region لضمان تفرد الاسم
+  domain       = "${var.environment}-my-domain-${var.aws_region}"
   user_pool_id = aws_cognito_user_pool.main.id
 }

@@ -94,3 +94,34 @@ resource "aws_iam_role_policy_attachment" "lbc_attach" {
   policy_arn = aws_iam_policy.lbc_policy.arn
   role       = aws_iam_role.lbc_irsa.name
 }
+
+
+# تعريف السياسة التي تسمح للـ Driver بالتحدث مع EFS
+resource "aws_iam_role" "efs_csi_driver" {
+  name = "${var.cluster_name}-efs-csi-driver-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Federated = aws_iam_openid_connect_provider.eks.arn # رابط الـ OIDC الخاص بك
+        }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            # تحديد الـ Service Account الذي سيستخدم هذا الـ Role
+            "${replace(aws_iam_openid_connect_provider.eks.url, "https://", "")}:sub" = "system:serviceaccount:kube-system:efs-csi-controller-sa"
+          }
+        }
+      }
+    ]
+  })
+}
+
+# ربط السياسة الجاهزة من AWS (AmazonEFSCSIDriverPolicy) بالـ Role
+resource "aws_iam_role_policy_attachment" "efs_csi_driver_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEFSCSIDriverPolicy"
+  role       = aws_iam_role.efs_csi_driver.name
+}

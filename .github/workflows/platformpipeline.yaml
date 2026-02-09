@@ -131,24 +131,23 @@ jobs:
             -n ${{ env.HELM_NAMESPACE_NEXUS }} \
             --create-namespace \
             --set nexus.service.type=ClusterIP
-
+            
       
       - name: Deploy SonarQube
-      - name: Deploy SonarQube
         run: |
-          # إضافة المستودع (استخدمي الرابط اللي اشتغل مع غيرك أو الرابط اللي جربناه)
-          helm repo add sonarqube https://sonarsource.github.io/helm-charts-sonarqube
+          # إضافة مستودع Bitnami كبديل لضمان استمرار المشروع
+          helm repo add bitnami https://charts.bitnami.com/bitnami
           helm repo update
           
-          # تنفيذ الـ Upgrade/Install مع زيادة الـ Timeout
-          helm upgrade --install sonarqube sonarqube/sonarqube \
-            -n ${{ env.HELM_NAMESPACE_SONAR }} \
+          # تثبيت نسخة SonarQube من Bitnami
+          helm upgrade --install sonarqube bitnami/sonarqube \
+            -n sonarqube \
             --create-namespace \
             --set service.type=ClusterIP \
-            --set persistence.enabled=true \
-            --set initSysctl.enabled=true \
             --timeout 10m
-        
+
+      
+
       # --- نهاية الإضافات الجديدة ---
 
       - name: Apply Unified Platform Ingress

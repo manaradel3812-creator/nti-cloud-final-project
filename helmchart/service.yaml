@@ -5,7 +5,7 @@ metadata:
 spec:
   type: ClusterIP 
   selector:
-    app: hello-app # تأكدي أن هذا الـ Label موجود في الـ Deployment pods
+    app: {{ .Release.Name }} # تأكدي أن هذا الـ Label موجود في الـ Deployment pods
   ports:
     - port: 80
       targetPort: 80
