@@ -134,19 +134,21 @@ jobs:
 
       
       - name: Deploy SonarQube
+      - name: Deploy SonarQube
         run: |
-          # 1. إضافة المستودع الرسمي الجديد (تم تحديث الرابط)
-          helm repo add sonarqube https://charts.sonarqube.org
+          # إضافة المستودع (استخدمي الرابط اللي اشتغل مع غيرك أو الرابط اللي جربناه)
+          helm repo add sonarqube https://sonarsource.github.io/helm-charts-sonarqube
           helm repo update
           
-          # 2. التثبيت مع إعدادات الـ Resources المناسبة للـ EKS
+          # تنفيذ الـ Upgrade/Install مع زيادة الـ Timeout
           helm upgrade --install sonarqube sonarqube/sonarqube \
             -n ${{ env.HELM_NAMESPACE_SONAR }} \
             --create-namespace \
             --set service.type=ClusterIP \
             --set persistence.enabled=true \
-            --set initSysctl.enabled=true
-    
+            --set initSysctl.enabled=true \
+            --timeout 10m
+        
       # --- نهاية الإضافات الجديدة ---
 
       - name: Apply Unified Platform Ingress
