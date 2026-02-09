@@ -27,6 +27,13 @@ resource "aws_efs_mount_target" "eks" {
   file_system_id  = aws_efs_file_system.eks.id
   subnet_id       = local.new_subnets[count.index]
   security_groups = [aws_security_group.efs_sg.id]
+
+  # 🛡️ نتأكد أن Terraform ما يحاولش يحذف أو يعدل قبل ما الـ File System جاهز
+  lifecycle {
+    create_before_destroy = true
+  }
+
+  depends_on = [aws_efs_file_system.eks]
 }
 
 ##################################
@@ -47,6 +54,12 @@ resource "kubernetes_storage_class_v1" "efs" {
 
   reclaim_policy      = "Retain"
   volume_binding_mode = "Immediate"
+
+  # 🛡️ نتأكد أن الـ StorageClass ما ينفذش قبل ما الـ EFS موجود
+  depends_on = [
+    aws_efs_file_system.eks,
+    aws_efs_mount_target.eks
+  ]
 }
 
 ##################################
