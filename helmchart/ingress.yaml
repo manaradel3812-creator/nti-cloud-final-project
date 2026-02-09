@@ -4,28 +4,26 @@ metadata:
   name: platform-ingress
   namespace: ingress-nginx
   annotations:
-    # إخبار الكلاستر إن NGINX هو المسؤول عن هذا الـ Ingress
     kubernetes.io/ingress.class: "nginx"
-    # تحويل الـ HTTP لـ HTTPS (لو ركبتي شهادة مستقبلاً)
     nginx.ingress.kubernetes.io/ssl-redirect: "false"
-    # زيادة وقت الانتظار للعمليات الطويلة في ArgoCD و Nexus
-    nginx.ingress.kubernetes.io/proxy-connect-timeout: "300"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    # مهم جداً لـ Nexus و SonarQube للسماح برفع الملفات الكبيرة
+    nginx.ingress.kubernetes.io/proxy-body-size: "512m"
+    # لضمان عمل المسارات الفرعية بشكل صحيح
+    nginx.ingress.kubernetes.io/rewrite-target: /
 spec:
   ingressClassName: nginx
   rules:
     - http:
         paths:
-          # 1️⃣ الأبلكيشن بتاعك (الـ Hello App)
+          # التطبيق الأساسي
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: hello-app-service # تأكدي إن ده نفس إسم الـ Service في الـ Helm
+                name: hello-app-service
                 port:
                   number: 80
-
-          # 2️⃣ واجهة ArgoCD
+          # أداة ArgoCD
           - path: /argocd
             pathType: Prefix
             backend:
@@ -33,12 +31,19 @@ spec:
                 name: argocd-server
                 port:
                   number: 80
-
-          # 3️⃣ واجهة Nexus (مثال لو ضفتيه)
+          # مخزن Nexus
           - path: /nexus
             pathType: Prefix
             backend:
               service:
-                name: nexus-service
+                name: nexus-repository-manager
                 port:
                   number: 8081
+          # أداة SonarQube
+          - path: /sonar
+            pathType: Prefix
+            backend:
+              service:
+                name: sonarqube-sonarqube
+                port:
+                  number: 9000

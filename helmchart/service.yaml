@@ -1,14 +1,12 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ .Release.Name }}
-  # ❌ شيلنا الـ Annotations من هنا لأن الـ NLB هيكون عند الـ NGINX بس
+  name: hello-app-service # اسم ثابت يطابق الـ Ingress
 spec:
-  # ✅ النوع لازم يكون ClusterIP (بيتغير من values.yaml)
-  type: {{ .Values.service.type | default "ClusterIP" }} 
+  type: ClusterIP 
   selector:
-    app: {{ .Release.Name }}
+    app: hello-app # تأكدي أن هذا الـ Label موجود في الـ Deployment pods
   ports:
-    - port: {{ .Values.service.port | default 80 }}
+    - port: 80
       targetPort: 80
       protocol: TCP
