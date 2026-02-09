@@ -13,13 +13,21 @@ resource "aws_efs_file_system" "eks" {
 ##################################
 # 2️⃣ EFS Mount Targets
 ##################################
+locals {
+  new_subnets = [
+    for s in aws_subnet.private : s.id
+    if !(s.id in ["subnet-03c4b5116d58f774b","subnet-07ffc050eb159c896"])
+  ]
+}
+
 resource "aws_efs_mount_target" "eks" {
-  count = length(aws_subnet.private)  # تعريف count
+  count = length(local.new_subnets)
 
   file_system_id  = aws_efs_file_system.eks.id
-  subnet_id       = aws_subnet.private[count.index].id
+  subnet_id       = local.new_subnets[count.index]
   security_groups = [aws_security_group.efs_sg.id]
 }
+
 
 ##################################
 # 3️⃣ Kubernetes StorageClass (EFS CSI)
