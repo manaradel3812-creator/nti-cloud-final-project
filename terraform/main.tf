@@ -151,3 +151,9 @@ resource "aws_cognito_user_pool_domain" "main" {
   domain       = "${var.environment}-my-domain-${var.aws_region}"
   user_pool_id = aws_cognito_user_pool.main.id
 }
+
+resource "aws_ecr_repository" "manar-app" {
+  name                 = "manar-app"
+  image_tag_mutability = "MUTABLE"   # أو "IMMUTABLE" لو عايزة تمنعي إعادة الكتابة على نفس الـ tag
+  #scan_on_push         = true        # يفحص الصور تلقائي بعد الرفع
+}

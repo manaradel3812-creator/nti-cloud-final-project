@@ -19,3 +19,7 @@ output "lbc_iam_role_arn" {
   value       = try(aws_iam_role.lbc_irsa.arn, null)
   description = "IAM Role ARN for AWS Load Balancer Controller"
 }
+
+output "manar_app_ecr_url" {
+  value = aws_ecr_repository.manar-app.repository_url
+}

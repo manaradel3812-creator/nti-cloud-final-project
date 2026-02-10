@@ -102,16 +102,50 @@ resource "aws_eks_fargate_profile" "default" {
   depends_on = [aws_eks_cluster.main]
 }
 
-resource "aws_eks_fargate_profile" "devops_tools" {
-  cluster_name           = aws_eks_cluster.main.name
-  fargate_profile_name   = "devops-tools"
-  pod_execution_role_arn = aws_iam_role.eks_fargate_role.arn
-  subnet_ids             = aws_subnet.private[*].id
+# resource "aws_eks_fargate_profile" "devops_tools" {
+#   cluster_name           = aws_eks_cluster.main.name
+#   fargate_profile_name   = "devops-tools"
+#   pod_execution_role_arn = aws_iam_role.eks_fargate_role.arn
+#   subnet_ids             = aws_subnet.private[*].id
 
-  selector { namespace = "sonarqube" }
-  selector { namespace = "nexus" }
+#   # selector { namespace = "sonarqube" }
+#   # selector { namespace = "nexus" }
 
-  depends_on = [aws_eks_cluster.main]
-}
+#   depends_on = [aws_eks_cluster.main]
+# }
+
+##################################
+# 6️⃣ Node Group خاص بـ Stateful Workloads (SonarQube & Nexus)
+##################################
+# resource "aws_eks_node_group" "stateful" {
+#   cluster_name    = aws_eks_cluster.main.name
+#   node_group_name = "stateful-nodes"
+#   node_role_arn   = aws_iam_role.eks_nodes_role.arn  # نفس role الـ main node group
+#   subnet_ids      = aws_subnet.private[*].id
+
+#   scaling_config {
+#     desired_size = 1
+#     max_size     = 1
+#     min_size     = 1
+#   }
+
+#   instance_types = ["t3.micro"]  # أو t3.medium حسب الموارد المطلوبة
+#   capacity_type  = "ON_DEMAND"
+
+#   # Label علشان نحدد الـ pods اللي تتشغل هنا
+#   labels = {
+#     workload = "stateful"
+#   }
+
+#   update_config {
+#     max_unavailable = 1
+#   }
+
+#   depends_on = [
+#     aws_iam_role_policy_attachment.nodes_AmazonEKSWorkerNodePolicy,
+#     aws_iam_role_policy_attachment.nodes_AmazonEKS_CNI_Policy,
+#     aws_iam_role_policy_attachment.nodes_AmazonEC2ContainerRegistryReadOnly
+#   ]
+# }
 
 

@@ -1,3 +1,6 @@
+nodeSelector:
+  workload: stateful
+
 persistence:
   enabled: true
   storageClass: efs-sc

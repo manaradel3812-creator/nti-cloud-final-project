@@ -1,0 +1,83 @@
+name: CI Docker + ECR + Optional Helm
+
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: 'Environment'
+        required: true
+        default: 'nonprod'
+        type: choice
+        options:
+          - nonprod
+          - prod
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1️⃣ Checkout الكود
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2️⃣ Download Terraform outputs artifact from Platform Deploy Pipeline
+      - name: Download Terraform outputs artifact
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          workflow: Platform Deploy Pipeline
+          name: terraform-outputs
+          path: .
+          search_artifacts: true
+
+      # 3️⃣ Set Terraform outputs كـ environment variables
+      - name: Set Terraform outputs as env vars
+        run: |
+          FILE_PATH=tf-outputs.json
+          test -f $FILE_PATH || (echo "❌ tf-outputs.json missing" && exit 1)
+
+          echo "CLUSTER_NAME=$(jq -r '.eks_cluster_name.value' $FILE_PATH)" >> $GITHUB_ENV
+          echo "VPC_ID=$(jq -r '.vpc_id.value' $FILE_PATH)" >> $GITHUB_ENV
+          echo "LBC_IAM_ROLE_ARN=$(jq -r '.lbc_iam_role_arn.value // empty' $FILE_PATH)" >> $GITHUB_ENV
+
+      # 4️⃣ Configure AWS Credentials
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      # 5️⃣ Login to ECR
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v1
+
+      # 6️⃣ Build Docker image
+      - name: Build Docker image
+        run: docker build -t manar-app:latest ./apphello
+
+      # 7️⃣ Tag Docker image للـ ECR
+      - name: Tag Docker image
+        run: docker tag manar-app:latest 389068786981.dkr.ecr.us-east-1.amazonaws.com/manar-app:latest
+
+      # 8️⃣ Push Docker image للـ ECR
+      - name: Push Docker image
+        run: docker push 389068786981.dkr.ecr.us-east-1.amazonaws.com/manar-app:latest
+
+      # 9️⃣ Optional: Helm upgrade على EKS Cluster
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Setup helm
+        uses: azure/setup-helm@v4
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --region us-east-1 --name ${{ env.CLUSTER_NAME }}
+
+      - name: Helm Upgrade manar-app (Optional)
+        run: |
+          helm upgrade --install manar-app ./helmchart/manar-app \
+            -n default \
+            --create-namespace \
+            --set image.repository=389068786981.dkr.ecr.us-east-1.amazonaws.com/manar-app \
+            --set image.tag=latest
