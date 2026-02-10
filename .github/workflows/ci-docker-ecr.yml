@@ -19,33 +19,31 @@ permissions:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-    
+
     steps:
       # 1️⃣ Checkout الكود
       - name: Checkout repository
         uses: actions/checkout@v4
+
       # 2️⃣ تحميل مخرجات Terraform من الـ Platform Pipeline
       - name: Download Terraform outputs artifact
         uses: dawidd6/action-download-artifact@v3
         with:
-          # تم تغيير workflow_file إلى workflow لأن الإصدار الجديد يطلب اسم الملف أو الـ ID فقط
-          workflow: platformpipeline.yaml 
+          workflow: platformpipeline.yaml
           name: terraform-outputs
           path: .
-          # دي بتضمن إنه يدور في الـ workflow اللي نجحت فعلياً
           workflow_conclusion: success
-          # لو لسه مش لاقيه، جربي تشيلي السطر ده أو تخليه true
-          search_artifacts: true 
-          # تأكدي إن الـ Artifact متاح من آخر 90 يوم (الافتراضي)
-  
+          search_artifacts: true
 
       # 3️⃣ استخراج البيانات من الـ JSON وتخزينها في ENV
-      # ملاحظة: افترضت هنا إن الـ Terraform بيطلع ecr_repository_url و aws_region
       - name: Parse Terraform Outputs
         id: parse_vars
         run: |
-          if [ ! -f "tf-outputs.json" ]; then echo "❌ tf-outputs.json not found!"; exit 1; fi
-          
+          if [ ! -f "tf-outputs.json" ]; then
+            echo "❌ tf-outputs.json not found!"
+            exit 1
+          fi
+
           echo "CLUSTER_NAME=$(jq -r '.eks_cluster_name.value' tf-outputs.json)" >> $GITHUB_ENV
           echo "AWS_REGION=$(jq -r '.aws_region.value // "us-east-1"' tf-outputs.json)" >> $GITHUB_ENV
           echo "ECR_REPOSITORY=$(jq -r '.ecr_repository_url.value' tf-outputs.json)" >> $GITHUB_ENV
@@ -67,10 +65,16 @@ jobs:
       # 6️⃣ Build, Tag, and Push (Dynamic)
       - name: Build and Push Image
         run: |
-          # بناء الصورة باستخدام الـ URL الديناميكي والـ Tag الفريد
-          docker build -t ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} ./apphello
+          # الدخول على فولدر التطبيق
+          cd apphello
+
+          # (اختياري للتأكد)
+          ls -la
+
+          # بناء الصورة باستخدام الـ Tag الفريد
+          docker build -t ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} .
           docker tag ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} ${{ env.ECR_REPOSITORY }}:latest
-          
+
           # رفع الصور
           docker push ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
           docker push ${{ env.ECR_REPOSITORY }}:latest
@@ -85,7 +89,9 @@ jobs:
       # 8️⃣ Update Kubeconfig
       - name: Update kubeconfig
         run: |
-          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+          aws eks update-kubeconfig \
+            --region ${{ env.AWS_REGION }} \
+            --name ${{ env.CLUSTER_NAME }}
 
       # 9️⃣ Helm Upgrade (Auto-deploy)
       - name: Deploy to EKS via Helm
@@ -95,4 +101,5 @@ jobs:
             --create-namespace \
             --set image.repository=${{ env.ECR_REPOSITORY }} \
             --set image.tag=${{ env.IMAGE_TAG }} \
-            --wait --timeout 5m0s
+            --wait \
+            --timeout 5m0s
