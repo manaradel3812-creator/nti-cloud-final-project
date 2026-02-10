@@ -126,3 +126,24 @@ resource "aws_iam_role_policy_attachment" "efs_csi_driver_policy" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEFSCSIDriverPolicy"
   role       = aws_iam_role.efs_csi_driver.name
 }
+
+
+# resource "aws_iam_role" "efs_csi_driver" {
+#   name = "efs-csi-driver-role"
+#   assume_role_policy = jsonencode({
+#     Version = "2012-10-17"
+#     Statement = [{
+#       Effect = "Allow"
+#       Principal = { Federated = aws_iam_openid_connect_provider.eks.arn }
+#       Action = "sts:AssumeRoleWithWebIdentity"
+#       Condition = { StringEquals = { 
+#         "${replace(aws_iam_openid_connect_provider.eks.url, "https://", "")}:sub" = "system:serviceaccount:kube-system:efs-csi-controller-sa" 
+#       }}
+#     }]
+#   })
+# }
+
+resource "aws_iam_role_policy_attachment" "efs_csi" {
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEFSCSIDriverPolicy"
+  role       = aws_iam_role.efs_csi_driver.name
+}

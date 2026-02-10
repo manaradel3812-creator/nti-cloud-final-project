@@ -113,3 +113,5 @@ resource "aws_eks_fargate_profile" "devops_tools" {
 
   depends_on = [aws_eks_cluster.main]
 }
+
+

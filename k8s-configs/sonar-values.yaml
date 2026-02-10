@@ -1,8 +1,8 @@
 persistence:
-  enabled: true
+  enabled: false
 postgresql:
   persistence:
-    enabled: true
+    enabled: false
   primary:
     persistence:
       enabled: false

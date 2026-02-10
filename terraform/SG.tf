@@ -76,3 +76,15 @@ resource "aws_security_group" "lb_sg" {
   }
 }
 
+
+resource "aws_security_group" "efs_sg" {
+  name   = "efs-sg"
+  vpc_id = aws_vpc.main.id # تأكد من اسم الـ VPC
+
+  ingress {
+    from_port       = 2049
+    to_port         = 2049
+    protocol        = "tcp"
+    security_groups = [aws_security_group.eks_nodes_sg.id] # السماح للـ Nodes فقط
+  }
+}
