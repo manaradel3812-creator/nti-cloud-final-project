@@ -14,6 +14,8 @@ output "cognito_user_pool_client_id" { value = aws_cognito_user_pool_client.main
 output "cognito_user_pool_domain" { value = aws_cognito_user_pool_domain.main.domain }
 
 # 👇 الأجزاء اللي كانت ناقصة ومهمة للـ Pipeline
+
 output "lbc_iam_role_arn" {
-  value = aws_iam_role.lbc_irsa.arn
+  value       = try(aws_iam_role.lbc_irsa.arn, null)
+  description = "IAM Role ARN for AWS Load Balancer Controller"
 }

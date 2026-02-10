@@ -60,7 +60,8 @@ resource "aws_iam_role_policy_attachment" "eks_fargate_policy" {
 # 4️⃣ AWS Load Balancer Controller Role (IRSA)
 #############################################
 resource "aws_iam_role" "lbc_irsa" {
-  name = "${var.cluster_name}-aws_load_balancer_controller-irsa"
+  name = "${var.cluster_name}-AWSLoadBalancerControllerPolicy"
+
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

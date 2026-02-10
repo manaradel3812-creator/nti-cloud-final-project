@@ -9,5 +9,5 @@ desired_capacity    = 3
 min_size            = 1
 max_size            = 4
 target_group_port   = 80
-# nlb_name          = null
-# nlb_arn           = null
+nlb_name            = null
+nlb_arn             = null

@@ -1,94 +1,93 @@
-##################################
-# 1️⃣ EFS File System
-##################################
-resource "aws_efs_file_system" "eks" {
-  creation_token = "eks-efs"
+# ##################################
+# # 1️⃣ EFS File System
+# ##################################
+# resource "aws_efs_file_system" "eks" {
+#   creation_token = "eks-efs"
 
-  tags = {
-    Name        = "${var.cluster_name}-efs"
-    Environment = var.environment
-  }
-}
+#   tags = {
+#     Name        = "${var.cluster_name}-efs"
+#     Environment = var.environment
+#   }
+# }
 
-##################################
-# 2️⃣ EFS Mount Targets
-##################################
-# أولًا، نحدد الـ subnets اللي محتاجين نعمل mount target فيها
-locals {
-  new_subnets = [
-    for s in aws_subnet.private : s.id
-    if s.id != "subnet-03c4b5116d58f774b" && s.id != "subnet-07ffc050eb159c896"
-  ]
-}
+# ##################################
+# # 2️⃣ EFS Security Group
+# ##################################
+# resource "aws_security_group" "efs_sg" {
+#   name        = "${var.cluster_name}-efs-sg"
+#   description = "SG for EFS"
+#   vpc_id      = aws_vpc.main.id
 
-resource "aws_efs_mount_target" "eks" {
-  count = length(local.new_subnets)
+#   ingress {
+#     from_port       = 2049
+#     to_port         = 2049
+#     protocol        = "tcp"
+#     security_groups = [aws_security_group.eks_nodes_sg.id]
+#     description     = "Allow NFS from EKS Nodes"
+#   }
 
-  file_system_id  = aws_efs_file_system.eks.id
-  subnet_id       = local.new_subnets[count.index]
-  security_groups = [aws_security_group.efs_sg.id]
+#   egress {
+#     from_port   = 0
+#     to_port     = 0
+#     protocol    = "-1"
+#     cidr_blocks = ["0.0.0.0/0"]
+#   }
 
-  # 🛡️ نتأكد أن Terraform ما يحاولش يحذف أو يعدل قبل ما الـ File System جاهز
-  lifecycle {
-    create_before_destroy = true
-  }
+#   tags = {
+#     Name        = "${var.cluster_name}-efs-sg"
+#     Environment = var.environment
+#   }
+# }
 
-  depends_on = [aws_efs_file_system.eks]
-}
+# ##################################
+# # 3️⃣ EFS Mount Targets
+# ##################################
+# locals {
+#   new_subnets = [
+#     for s in aws_subnet.private : s.id
+#     if s.id != "subnet-03c4b5116d58f774b"
+#     && s.id != "subnet-07ffc050eb159c896"
+#   ]
+# }
 
-##################################
-# 3️⃣ Kubernetes StorageClass (EFS CSI)
-##################################
-resource "kubernetes_storage_class_v1" "efs" {
-  metadata {
-    name = "efs-sc"
-  }
+# resource "aws_efs_mount_target" "eks" {
+#   count = length(local.new_subnets)
 
-  storage_provisioner = "efs.csi.aws.com"
+#   file_system_id  = aws_efs_file_system.eks.id
+#   subnet_id       = local.new_subnets[count.index]
+#   security_groups = [aws_security_group.efs_sg.id]
 
-  parameters = {
-    provisioningMode = "efs-ap"
-    fileSystemId     = aws_efs_file_system.eks.id
-    directoryPerms   = "700"
-  }
+#   lifecycle {
+#     create_before_destroy = true
+#   }
 
-  reclaim_policy      = "Retain"
-  volume_binding_mode = "Immediate"
+#   depends_on = [
+#     aws_efs_file_system.eks,
+#     aws_security_group.efs_sg
+#   ]
+# }
 
-  # 🛡️ نتأكد أن الـ StorageClass ما ينفذش قبل ما الـ EFS موجود
-  depends_on = [
-    aws_efs_file_system.eks,
-    aws_efs_mount_target.eks
-  ]
-}
+# ##################################
+# # 4️⃣ Kubernetes StorageClass (EFS CSI)
+# ##################################
+# resource "kubernetes_storage_class_v1" "efs" {
+#   metadata {
+#     name = "efs-sc"
+#   }
 
-##################################
-# 4️⃣ Security Group for EFS
-##################################
-resource "aws_security_group" "efs_sg" {
-  name        = "${var.cluster_name}-efs-sg"
-  description = "SG for EFS"
-  vpc_id      = aws_vpc.main.id
+#   storage_provisioner = "efs.csi.aws.com"
 
-  # السماح للـ EKS Nodes بالوصول على NFS
-  ingress {
-    from_port       = 2049
-    to_port         = 2049
-    protocol        = "tcp"
-    security_groups = [aws_security_group.eks_nodes_sg.id]
-    description     = "Allow NFS from EKS Nodes"
-  }
+#   parameters = {
+#     provisioningMode = "efs-ap"
+#     fileSystemId     = aws_efs_file_system.eks.id
+#     directoryPerms   = "700"
+#   }
 
-  # السماح بكل Outbound
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
+#   reclaim_policy      = "Retain"
+#   volume_binding_mode = "Immediate"
 
-  tags = {
-    Name        = "${var.cluster_name}-efs-sg"
-    Environment = var.environment
-  }
-}
+#   depends_on = [
+#     aws_eks_addon.efs_csi,
+#     aws_efs_mount_target.eks
+#   ]
+# }
