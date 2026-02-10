@@ -1,14 +1,24 @@
+# إعدادات التخزين لـ SonarQube نفسه
 persistence:
   enabled: true
-  storageClass: efs-sc
+  storageClass: "efs-sc"
   size: 20Gi
 
+# إعدادات قاعدة البيانات PostgreSQL
 postgresql:
-  persistence:
-    enabled: true
-    storageClass: efs-sc
-    size: 10Gi
+  enabled: true
+  primary:
+    persistence:
+      enabled: true
+      storageClass: "efs-sc"
+      size: 10Gi
+    # حل مشكلة الفارقيت (Fargate) لقاعدة البيانات
+    containerSecurityContext:
+      privileged: false
+      allowPrivilegeEscalation: false
+      runAsUser: 1001
 
+# إعدادات الموارد
 resources:
   requests:
     memory: "2Gi"
@@ -16,3 +26,16 @@ resources:
   limits:
     memory: "4Gi"
     cpu: "1000m"
+
+# حل مشكلة الفارقيت (Fargate) لـ Elasticsearch المدمج
+elasticsearch:
+  configureSysctl: false
+  # الفارقيت يحتاج أحيما لتعطيل الـ privileged حتى داخل الـ ES
+  securityContext:
+    enabled: false
+
+# حل مشكلة الفارقيت لـ SonarQube Core
+containerSecurityContext:
+  privileged: false
+  readOnlyRootFilesystem: false
+  allowPrivilegeEscalation: false

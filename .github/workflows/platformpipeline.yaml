@@ -28,7 +28,20 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: false 
+          clean: true            # يمسح أي ملفات قديمة مخزنة في الـ Runner
+          fetch-depth: 0         # يجلب كامل التاريخ لضمان عدم وجود نقص في الملفات
 
+# --- مكان الـ Debug الأول: التأكد من محتوى الملفات داخل الـ Runner ---
+      - name: 🔍 Debug - Verify Config Files
+        run: |
+          echo "Checking SonarQube values file..."
+          if [ -f "k8s-configs/sonar-values.yaml" ]; then
+            echo "✅ sonar-values.yaml found!"
+            echo "--- Content of storageClass inside file ---"
+            grep -i "storageClass" k8s-configs/sonar-values.yaml || echo "❌ storageClass NOT FOUND in sonar-values.yaml"
+          else
+            echo "❌ ERROR: k8s-configs/sonar-values.yaml NOT FOUND!"
+          fi
       - name: Download Terraform outputs
         uses: dawidd6/action-download-artifact@v3
         with:
@@ -40,7 +53,10 @@ jobs:
       - name: Set Terraform outputs as environment variables
         run: |
           FILE_PATH="tf-outputs.json"
-          if [ ! -f "$FILE_PATH" ]; then echo "::error::tf-outputs.json missing!"; exit 1; fi
+          if [ ! -f "$FILE_PATH" ]; then
+            echo "::error::tf-outputs.json missing!"
+            exit 1
+          fi
           CLUSTER=$(jq -r '.eks_cluster_name.value' $FILE_PATH)
           VPC=$(jq -r '.vpc_id.value' $FILE_PATH)
           LBC_ROLE=$(jq -r '.lbc_iam_role_arn.value // empty' $FILE_PATH)
@@ -57,13 +73,13 @@ jobs:
 
       - name: Set up kubectl & Helm
         uses: azure/setup-kubectl@v4
-      
+
       - uses: azure/setup-helm@v4
 
       - name: Update kubeconfig
-        run: aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+        run: |
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
 
-      # --- تحقق من جاهزية التخزين قبل نشر أي خدمة تحتاج PV ---
       - name: Verify Storage Readiness
         run: |
           echo "Checking for StorageClass efs-sc..."
@@ -116,25 +132,26 @@ jobs:
           echo "Waiting for pods to be ready..."
           kubectl rollout status deployment/aws-load-balancer-controller -n kube-system --timeout=300s
 
-      - name: Deploy NGINX Ingress (Auto-NLB)
+      - name: Deploy NGINX Ingress (NodePort)
         run: |
           helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
           helm repo update
           helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
             -n ${{ env.HELM_NAMESPACE_INGRESS }} \
             --create-namespace \
-            --set controller.service.type=LoadBalancer \
-            --set controller.service.annotations."service\.beta\.kubernetes\.io/aws-load-balancer-type"="external" \
-            --set controller.service.annotations."service\.beta\.kubernetes\.io/aws-load-balancer-nlb-target-type"="ip" \
-            --set controller.service.annotations."service\.beta\.kubernetes\.io/aws-load-balancer-scheme"="internet-facing"
+            --set controller.service.type=NodePort \
+            --wait=false \
+            --atomic
 
       - name: Deploy ArgoCD
         run: |
           helm repo add argo https://argoproj.github.io/argo-helm
           helm repo update
-          helm upgrade --install argocd argo/argo-cd -n ${{ env.HELM_NAMESPACE_ARGOCD }} --create-namespace --set server.service.type=ClusterIP
+          helm upgrade --install argocd argo/argo-cd \
+            -n ${{ env.HELM_NAMESPACE_ARGOCD }} \
+            --create-namespace \
+            --set server.service.type=ClusterIP
 
-      # --- نشر Nexus مع EFS PV ---
       - name: Deploy Nexus Repository
         run: |
           helm repo add sonatype https://sonatype.github.io/helm3-charts/
@@ -142,17 +159,25 @@ jobs:
           helm upgrade --install nexus sonatype/nexus-repository-manager \
             -n ${{ env.HELM_NAMESPACE_NEXUS }} \
             --create-namespace \
-            -f k8s-configs/nexus.yaml
+            -f k8s-configs/nexus-values.yaml
 
-      # --- نشر SonarQube مع EFS PV ---
       - name: Deploy SonarQube
         run: |
           helm repo add bitnami https://charts.bitnami.com/bitnami
           helm repo update
+
+          # Fetch existing password if release exists
+          if kubectl get secret -n ${{ env.HELM_NAMESPACE_SONAR }} sonarqube > /dev/null 2>&1; then
+            SONARQUBE_PASSWORD=$(kubectl get secret -n ${{ env.HELM_NAMESPACE_SONAR }} sonarqube -o jsonpath="{.data.sonarqube-password}" | base64 --decode)
+          else
+            SONARQUBE_PASSWORD=MyStrongPassword123
+          fi
+
           helm upgrade --install sonarqube bitnami/sonarqube \
             -n ${{ env.HELM_NAMESPACE_SONAR }} \
             --create-namespace \
-            -f k8s-configs/sonar.yaml \
+            -f k8s-configs/sonar-values.yaml \
+            --set sonarqubePassword=$SONARQUBE_PASSWORD \
             --timeout 10m
 
       - name: Apply Unified Platform Ingress
