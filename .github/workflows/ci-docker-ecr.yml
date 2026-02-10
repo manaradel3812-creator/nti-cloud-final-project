@@ -28,7 +28,7 @@ jobs:
       - name: Download Terraform outputs artifact
         uses: dawidd6/action-download-artifact@v3
         with:
-          workflow: Platform Deploy Pipeline
+          workflow_file: platformpipeline.yaml
           name: terraform-outputs
           path: .
           search_artifacts: true
