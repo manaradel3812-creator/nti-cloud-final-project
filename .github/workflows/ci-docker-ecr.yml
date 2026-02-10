@@ -67,6 +67,8 @@ jobs:
       - name: Build and Push Image
         run: |
           cd appmanar
+          mv Dokerfile Dockerfile
+
           ls -la
           docker build -t ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} .
           docker tag ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} ${{ env.ECR_REPOSITORY }}:latest
