@@ -24,15 +24,20 @@ jobs:
       # 1️⃣ Checkout الكود
       - name: Checkout repository
         uses: actions/checkout@v4
-
       # 2️⃣ تحميل مخرجات Terraform من الـ Platform Pipeline
       - name: Download Terraform outputs artifact
         uses: dawidd6/action-download-artifact@v3
         with:
-          workflow_file: platformpipeline.yaml
+          # تم تغيير workflow_file إلى workflow لأن الإصدار الجديد يطلب اسم الملف أو الـ ID فقط
+          workflow: platformpipeline.yaml 
           name: terraform-outputs
           path: .
-          search_artifacts: true
+          # دي بتضمن إنه يدور في الـ workflow اللي نجحت فعلياً
+          workflow_conclusion: success
+          # لو لسه مش لاقيه، جربي تشيلي السطر ده أو تخليه true
+          search_artifacts: true 
+          # تأكدي إن الـ Artifact متاح من آخر 90 يوم (الافتراضي)
+  
 
       # 3️⃣ استخراج البيانات من الـ JSON وتخزينها في ENV
       # ملاحظة: افترضت هنا إن الـ Terraform بيطلع ecr_repository_url و aws_region
