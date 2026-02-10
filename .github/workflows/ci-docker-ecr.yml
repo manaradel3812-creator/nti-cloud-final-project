@@ -34,7 +34,10 @@ jobs:
       - name: Set Terraform outputs as env vars
         run: |
           FILE_PATH=tf-outputs.json
-          test -f $FILE_PATH || (echo "❌ tf-outputs.json missing" && exit 1)
+          if [ ! -f "$FILE_PATH" ]; then
+            echo "❌ tf-outputs.json missing!"
+            exit 1
+          fi
 
           echo "CLUSTER_NAME=$(jq -r '.eks_cluster_name.value' $FILE_PATH)" >> $GITHUB_ENV
           echo "VPC_ID=$(jq -r '.vpc_id.value' $FILE_PATH)" >> $GITHUB_ENV
@@ -48,7 +51,7 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
 
-      # 5️⃣ Login to ECR
+      # 5️⃣ Login to Amazon ECR
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v1
 

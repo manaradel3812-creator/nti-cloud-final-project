@@ -64,6 +64,13 @@ jobs:
           echo "VPC_ID=$VPC" >> $GITHUB_ENV
           echo "LBC_IAM_ROLE_ARN=$LBC_ROLE" >> $GITHUB_ENV
 
+      # ← ضعي خطوة رفع الـ artifact هنا
+      - name: Upload Terraform outputs
+        uses: actions/upload-artifact@v3
+        with:
+          name: terraform-outputs
+          path: tf-outputs.json
+          
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -184,6 +191,8 @@ jobs:
         run: |
           echo "Applying Ingress from helmchart path..."
           kubectl apply -f helmchart/ingress.yaml
+
+      
 
       - name: 🚀 Final Deployment Summary
         run: |
