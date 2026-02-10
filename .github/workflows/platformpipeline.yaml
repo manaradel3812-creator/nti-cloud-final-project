@@ -64,13 +64,7 @@ jobs:
           echo "VPC_ID=$VPC" >> $GITHUB_ENV
           echo "LBC_IAM_ROLE_ARN=$LBC_ROLE" >> $GITHUB_ENV
 
-      # ← ضعي خطوة رفع الـ artifact هنا
-      - name: Upload Terraform outputs
-        uses: actions/upload-artifact@v3
-        with:
-          name: terraform-outputs
-          path: tf-outputs.json
-          
+
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -207,4 +201,10 @@ jobs:
           echo -e "\n"
           echo "🛠️  Nexus Namespace: ${{ env.HELM_NAMESPACE_NEXUS }}"
           echo "🛡️  SonarQube Namespace: ${{ env.HELM_NAMESPACE_SONAR }}"
-          echo "===================================================="
+          echo "====================================================" 
+          
+      - name: Re-Upload Terraform outputs for CI
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-outputs
+          path: tf-outputs.json

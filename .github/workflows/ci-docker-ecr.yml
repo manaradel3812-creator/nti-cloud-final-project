@@ -11,6 +11,9 @@ on:
         options:
           - nonprod
           - prod
+permissions:
+  contents: read
+  actions: read
 
 jobs:
   build-and-push:
@@ -29,6 +32,11 @@ jobs:
           name: terraform-outputs
           path: .
           search_artifacts: true
+      - name: Debug artifact
+        run: |
+          ls -la
+          cat tf-outputs.json
+
 
       # 3️⃣ Set Terraform outputs كـ environment variables
       - name: Set Terraform outputs as env vars
