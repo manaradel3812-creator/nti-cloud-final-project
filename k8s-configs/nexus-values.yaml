@@ -1,5 +1,8 @@
 persistence:
-  enabled: false
+  enabled: true
+  storageClass: efs-sc
+  size: 20Gi
+
 deployment:
   resources:
     requests:

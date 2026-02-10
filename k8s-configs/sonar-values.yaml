@@ -1,21 +1,14 @@
 persistence:
-  enabled: false
+  enabled: true
+  storageClass: efs-sc
+  size: 20Gi
+
 postgresql:
   persistence:
-    enabled: false
-  primary:
-    persistence:
-      enabled: false
-    containerSecurityContext:
-      enabled: false
-    podSecurityContext:
-      enabled: false
-securityContext:
-  enabled: false
-containerSecurityContext:
-  enabled: false
-sysctl:
-  enabled: false
+    enabled: true
+    storageClass: efs-sc
+    size: 10Gi
+
 resources:
   requests:
     memory: "2Gi"

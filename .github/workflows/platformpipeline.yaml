@@ -17,7 +17,6 @@ env:
   HELM_NAMESPACE_INGRESS: ingress-nginx
   HELM_NAMESPACE_ARGOCD: argocd
   HELM_NAMESPACE_ES: external-secrets
-  # إضافة الـ Namespaces الجديدة هنا
   HELM_NAMESPACE_NEXUS: nexus
   HELM_NAMESPACE_SONAR: sonarqube
 
@@ -63,6 +62,20 @@ jobs:
 
       - name: Update kubeconfig
         run: aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+
+      # --- تحقق من جاهزية التخزين قبل نشر أي خدمة تحتاج PV ---
+      - name: Verify Storage Readiness
+        run: |
+          echo "Checking for StorageClass efs-sc..."
+          if kubectl get sc efs-sc; then
+            echo "StorageClass efs-sc found. Proceeding..."
+          else
+            echo "Error: StorageClass efs-sc not found! Ensure Terraform Step 1 is complete."
+            exit 1
+          fi
+
+          echo "Checking EFS CSI Driver status..."
+          kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-efs-csi-driver
 
       - name: Clean up broken webhooks (Safe)
         run: |
@@ -121,8 +134,7 @@ jobs:
           helm repo update
           helm upgrade --install argocd argo/argo-cd -n ${{ env.HELM_NAMESPACE_ARGOCD }} --create-namespace --set server.service.type=ClusterIP
 
-      # --- بداية الإضافات الجديدة للمرحلة الثالثة ---
-      
+      # --- نشر Nexus مع EFS PV ---
       - name: Deploy Nexus Repository
         run: |
           helm repo add sonatype https://sonatype.github.io/helm3-charts/
@@ -130,81 +142,21 @@ jobs:
           helm upgrade --install nexus sonatype/nexus-repository-manager \
             -n ${{ env.HELM_NAMESPACE_NEXUS }} \
             --create-namespace \
-            --set nexus.service.type=ClusterIP
-            
-      
+            -f k8s-configs/nexus.yaml
+
+      # --- نشر SonarQube مع EFS PV ---
       - name: Deploy SonarQube
         run: |
-          # إضافة مستودع Bitnami كبديل لضمان استمرار المشروع
           helm repo add bitnami https://charts.bitnami.com/bitnami
           helm repo update
-          
-          # تثبيت نسخة SonarQube من Bitnami
           helm upgrade --install sonarqube bitnami/sonarqube \
-            -n sonarqube \
+            -n ${{ env.HELM_NAMESPACE_SONAR }} \
             --create-namespace \
-            --set service.type=ClusterIP \
+            -f k8s-configs/sonar.yaml \
             --timeout 10m
-
-      
-
-      # --- نهاية الإضافات الجديدة ---
 
       - name: Apply Unified Platform Ingress
         run: |
-          echo "Creating Ingress manifest directory in helmchart..."
-          mkdir -p helmchart
-          
-          echo "Writing platform-ingress.yaml with Nexus and SonarQube paths..."
-          cat <<EOF > helmchart/ingress.yaml
-          apiVersion: networking.k8s.io/v1
-          kind: Ingress
-          metadata:
-            name: platform-ingress
-            namespace: ingress-nginx
-            annotations:
-              kubernetes.io/ingress.class: "nginx"
-              nginx.ingress.kubernetes.io/ssl-redirect: "false"
-              nginx.ingress.kubernetes.io/proxy-body-size: "512m"
-              nginx.ingress.kubernetes.io/rewrite-target: /
-          spec:
-            ingressClassName: nginx
-            rules:
-              - http:
-                  paths:
-                    - path: /
-                      pathType: Prefix
-                      backend:
-                        service:
-                          name: hello-app-service
-                          port:
-                            number: 80
-                    - path: /argocd
-                      pathType: Prefix
-                      backend:
-                        service:
-                          name: argocd-server
-                          port:
-                            number: 80
-                    - path: /nexus
-                      pathType: Prefix
-                      backend:
-                        service:
-                          name: nexus-repository-manager
-                          port:
-                            number: 8081
-                    - path: /sonar
-                      pathType: Prefix
-                      backend:
-                        service:
-                          name: sonarqube-sonarqube
-                          port:
-                            number: 9000
-          EOF
-          
-          echo "Waiting 30s for NGINX to stabilize..."
-          sleep 30
-          
           echo "Applying Ingress from helmchart path..."
           kubectl apply -f helmchart/ingress.yaml
 
