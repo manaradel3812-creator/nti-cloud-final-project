@@ -1,4 +1,4 @@
-name: CI Docker + ECR + Optional Helm
+name: CI Docker + ECR + Helm Deployment
 
 on:
   workflow_dispatch:
@@ -11,20 +11,21 @@ on:
         options:
           - nonprod
           - prod
+
 permissions:
   contents: read
   actions: read
 
 jobs:
-  build-and-push:
+  build-and-deploy:
     runs-on: ubuntu-latest
-
+    
     steps:
       # 1️⃣ Checkout الكود
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Download Terraform outputs artifact from Platform Deploy Pipeline
+      # 2️⃣ تحميل مخرجات Terraform من الـ Platform Pipeline
       - name: Download Terraform outputs artifact
         uses: dawidd6/action-download-artifact@v3
         with:
@@ -32,24 +33,18 @@ jobs:
           name: terraform-outputs
           path: .
           search_artifacts: true
-      - name: Debug artifact
+
+      # 3️⃣ استخراج البيانات من الـ JSON وتخزينها في ENV
+      # ملاحظة: افترضت هنا إن الـ Terraform بيطلع ecr_repository_url و aws_region
+      - name: Parse Terraform Outputs
+        id: parse_vars
         run: |
-          ls -la
-          cat tf-outputs.json
-
-
-      # 3️⃣ Set Terraform outputs كـ environment variables
-      - name: Set Terraform outputs as env vars
-        run: |
-          FILE_PATH=tf-outputs.json
-          if [ ! -f "$FILE_PATH" ]; then
-            echo "❌ tf-outputs.json missing!"
-            exit 1
-          fi
-
-          echo "CLUSTER_NAME=$(jq -r '.eks_cluster_name.value' $FILE_PATH)" >> $GITHUB_ENV
-          echo "VPC_ID=$(jq -r '.vpc_id.value' $FILE_PATH)" >> $GITHUB_ENV
-          echo "LBC_IAM_ROLE_ARN=$(jq -r '.lbc_iam_role_arn.value // empty' $FILE_PATH)" >> $GITHUB_ENV
+          if [ ! -f "tf-outputs.json" ]; then echo "❌ tf-outputs.json not found!"; exit 1; fi
+          
+          echo "CLUSTER_NAME=$(jq -r '.eks_cluster_name.value' tf-outputs.json)" >> $GITHUB_ENV
+          echo "AWS_REGION=$(jq -r '.aws_region.value // "us-east-1"' tf-outputs.json)" >> $GITHUB_ENV
+          echo "ECR_REPOSITORY=$(jq -r '.ecr_repository_url.value' tf-outputs.json)" >> $GITHUB_ENV
+          echo "IMAGE_TAG=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_ENV
 
       # 4️⃣ Configure AWS Credentials
       - name: Configure AWS Credentials
@@ -57,38 +52,42 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
+          aws-region: ${{ env.AWS_REGION }}
 
       # 5️⃣ Login to Amazon ECR
       - name: Login to Amazon ECR
-        uses: aws-actions/amazon-ecr-login@v1
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
 
-      # 6️⃣ Build Docker image
-      - name: Build Docker image
-        run: docker build -t manar-app:latest ./apphello
+      # 6️⃣ Build, Tag, and Push (Dynamic)
+      - name: Build and Push Image
+        run: |
+          # بناء الصورة باستخدام الـ URL الديناميكي والـ Tag الفريد
+          docker build -t ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} ./apphello
+          docker tag ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} ${{ env.ECR_REPOSITORY }}:latest
+          
+          # رفع الصور
+          docker push ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          docker push ${{ env.ECR_REPOSITORY }}:latest
 
-      # 7️⃣ Tag Docker image للـ ECR
-      - name: Tag Docker image
-        run: docker tag manar-app:latest 389068786981.dkr.ecr.us-east-1.amazonaws.com/manar-app:latest
-
-      # 8️⃣ Push Docker image للـ ECR
-      - name: Push Docker image
-        run: docker push 389068786981.dkr.ecr.us-east-1.amazonaws.com/manar-app:latest
-
-      # 9️⃣ Optional: Helm upgrade على EKS Cluster
-      - name: Setup kubectl
+      # 7️⃣ تجهيز الأدوات (Kubectl & Helm)
+      - name: Setup Kubernetes Tools
         uses: azure/setup-kubectl@v4
 
-      - name: Setup helm
+      - name: Setup Helm
         uses: azure/setup-helm@v4
 
+      # 8️⃣ Update Kubeconfig
       - name: Update kubeconfig
-        run: aws eks update-kubeconfig --region us-east-1 --name ${{ env.CLUSTER_NAME }}
+        run: |
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
 
-      - name: Helm Upgrade manar-app (Optional)
+      # 9️⃣ Helm Upgrade (Auto-deploy)
+      - name: Deploy to EKS via Helm
         run: |
           helm upgrade --install manar-app ./helmchart/manar-app \
-            -n default \
+            --namespace default \
             --create-namespace \
-            --set image.repository=389068786981.dkr.ecr.us-east-1.amazonaws.com/manar-app \
-            --set image.tag=latest
+            --set image.repository=${{ env.ECR_REPOSITORY }} \
+            --set image.tag=${{ env.IMAGE_TAG }} \
+            --wait --timeout 5m0s
