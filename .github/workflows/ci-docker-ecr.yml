@@ -21,11 +21,13 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Checkout الكود
-      - name: Checkout repository
+      # 1️⃣ Checkout repository مع submodules
+      - name: Checkout repository with submodules
         uses: actions/checkout@v4
+        with:
+          submodules: true
 
-      # 2️⃣ تحميل مخرجات Terraform من الـ Platform Pipeline
+      # 2️⃣ تحميل Terraform outputs
       - name: Download Terraform outputs artifact
         uses: dawidd6/action-download-artifact@v3
         with:
@@ -35,7 +37,7 @@ jobs:
           workflow_conclusion: success
           search_artifacts: true
 
-      # 3️⃣ استخراج البيانات من الـ JSON وتخزينها في ENV
+      # 3️⃣ Parse Terraform Outputs
       - name: Parse Terraform Outputs
         id: parse_vars
         run: |
@@ -43,7 +45,6 @@ jobs:
             echo "❌ tf-outputs.json not found!"
             exit 1
           fi
-
           echo "CLUSTER_NAME=$(jq -r '.eks_cluster_name.value' tf-outputs.json)" >> $GITHUB_ENV
           echo "AWS_REGION=$(jq -r '.aws_region.value // "us-east-1"' tf-outputs.json)" >> $GITHUB_ENV
           echo "ECR_REPOSITORY=$(jq -r '.ecr_repository_url.value' tf-outputs.json)" >> $GITHUB_ENV
@@ -62,38 +63,29 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # 6️⃣ Build, Tag, and Push (Dynamic)
+      # 6️⃣ Build, Tag, and Push Image
       - name: Build and Push Image
         run: |
-          # الدخول على فولدر التطبيق
-          cd apphello
-
-          # (اختياري للتأكد)
+          cd apphellomanar
           ls -la
-
-          # بناء الصورة باستخدام الـ Tag الفريد
           docker build -t ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} .
           docker tag ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} ${{ env.ECR_REPOSITORY }}:latest
-
-          # رفع الصور
           docker push ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
           docker push ${{ env.ECR_REPOSITORY }}:latest
 
-      # 7️⃣ تجهيز الأدوات (Kubectl & Helm)
+      # 7️⃣ Setup Kubernetes Tools
       - name: Setup Kubernetes Tools
         uses: azure/setup-kubectl@v4
 
       - name: Setup Helm
         uses: azure/setup-helm@v4
 
-      # 8️⃣ Update Kubeconfig
+      # 8️⃣ Update kubeconfig
       - name: Update kubeconfig
         run: |
-          aws eks update-kubeconfig \
-            --region ${{ env.AWS_REGION }} \
-            --name ${{ env.CLUSTER_NAME }}
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
 
-      # 9️⃣ Helm Upgrade (Auto-deploy)
+      # 9️⃣ Helm Upgrade
       - name: Deploy to EKS via Helm
         run: |
           helm upgrade --install manar-app ./helmchart/manar-app \
@@ -101,5 +93,4 @@ jobs:
             --create-namespace \
             --set image.repository=${{ env.ECR_REPOSITORY }} \
             --set image.tag=${{ env.IMAGE_TAG }} \
-            --wait \
-            --timeout 5m0s
+            --wait --timeout 5m0s
