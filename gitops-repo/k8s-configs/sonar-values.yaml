@@ -1,0 +1,70 @@
+# ===============================================
+# إعدادات التخزين لـ SonarQube نفسه
+# ===============================================
+persistence:
+  enabled: true
+  storageClass: "efs-sc"
+  size: 20Gi
+
+# Kubernetes Node Selector
+nodeSelector:
+  workload: stateful
+
+postgresql:
+  primary:
+    nodeSelector:
+      workload: stateful
+
+
+# ===============================================
+# nodeSelector على مستوى كامل chart
+# ===============================================
+nodeSelector:
+  workload: stateful
+
+# ===============================================
+# إعدادات قاعدة البيانات PostgreSQL
+# ===============================================
+postgresql:
+  enabled: true
+  primary:
+    persistence:
+      enabled: true
+      storageClass: "efs-sc"
+      size: 10Gi
+    nodeSelector:
+      workload: stateful
+
+# ===============================================
+# إعدادات الأمان / Fargate compatibility
+# ===============================================
+containerSecurityContext:
+  privileged: false
+  readOnlyRootFilesystem: false
+  allowPrivilegeEscalation: false
+
+postgresql:
+  primary:
+    containerSecurityContext:
+      privileged: false
+      allowPrivilegeEscalation: false
+      runAsUser: 1001
+
+# ===============================================
+# إعدادات الموارد
+# ===============================================
+resources:
+  requests:
+    memory: "2Gi"
+    cpu: "500m"
+  limits:
+    memory: "4Gi"
+    cpu: "1000m"
+
+# ===============================================
+# Elasticsearch المدمج
+# ===============================================
+elasticsearch:
+  configureSysctl: false
+  securityContext:
+    enabled: false

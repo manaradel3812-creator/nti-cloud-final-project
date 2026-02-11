@@ -1,10 +1,39 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <title>DevOps Final Project</title>
+  <meta charset="UTF-8">
+  <title>Hello From Manar</title>
+  <style>
+    body {
+      background-color: #ffe4e1; /* لون وردي فاتح للخلفية */
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      font-family: 'Arial', sans-serif;
+      flex-direction: column;
+    }
+
+    h1 {
+      color: #ff69b4; /* لون وردي داكن للكلمة */
+      font-size: 3em;
+      text-shadow: 2px 2px #ffb6c1;
+    }
+
+    .flower {
+      font-size: 5em;
+      margin-top: 20px;
+      animation: bounce 2s infinite;
+    }
+
+    @keyframes bounce {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-20px); }
+    }
+  </style>
 </head>
-<body style="text-align:center; margin-top:100px;">
-  <h1>Hello From Manar 👋</h1>
-  <h3>EKS + Helm + Ingress</h3>
+<body>
+  <h1>Hello From Manar</h1>
+  <div class="flower">🌸</div>
 </body>
 </html>

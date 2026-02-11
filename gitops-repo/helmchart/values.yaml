@@ -1,0 +1,24 @@
+replicaCount: 1
+
+# values.yaml
+image:
+  repository: 389068786981.dkr.ecr.us-east-1.amazonaws.com/manar-app 
+  tag: latest
+  pullPolicy: Always
+
+
+service:
+  type: ClusterIP  # 👈 لازم يكون داخلي عشان الـ NGINX هو اللي يكلمه
+  port: 80
+
+ingress:
+  enabled: true
+  className: nginx  # 👈 لازم يكون nginx عشان البوابة (NGINX) تلقطه
+  annotations:
+    # مش محتاجين annotations بتاعة AWS هنا لأنها موجودة في الـ Controller نفسه
+    kubernetes.io/ingress.class: "nginx"
+  hosts:
+    - host: ""  # لو معندكيش دومين حقيقي سيبيه فاضي والـ NLB هيشتغل بالـ DNS بتاعه
+      paths:
+        - path: /
+          pathType: Prefix

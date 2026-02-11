@@ -26,6 +26,12 @@ jobs:
   terraform:
     name: Terraform Apply/Destroy
     runs-on: ubuntu-latest
+
+    # 🔹 وضعنا inputs كـ env على مستوى job لتجنب أي injection
+    env:
+      TF_ENV: ${{ github.event.inputs.env }}
+      TF_DESTROY: ${{ github.event.inputs.destroy }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -45,30 +51,29 @@ jobs:
       - name: Terraform Init
         run: |
           set -euo pipefail
-          cd ${{ env.TF_DIR }}
+          cd "$TF_DIR"
           terraform init -input=false
 
       - name: Terraform Plan
         run: |
           set -euo pipefail
-          cd ${{ env.TF_DIR }}
-          if [ "${{ github.event.inputs.destroy }}" == "true" ]; then
-            terraform plan -destroy -out=tfplan -input=false -var-file="${{ github.event.inputs.env }}.tfvars"
+          cd "$TF_DIR"
+          if [ "$TF_DESTROY" == "true" ]; then
+            terraform plan -destroy -out=tfplan -input=false -var-file="$TF_ENV.tfvars"
           else
-            terraform plan -out=tfplan -input=false -var-file="${{ github.event.inputs.env }}.tfvars"
+            terraform plan -out=tfplan -input=false -var-file="$TF_ENV.tfvars"
           fi
 
       - name: Terraform Apply
         run: |
           set -euo pipefail
-          cd ${{ env.TF_DIR }}
+          cd "$TF_DIR"
           terraform apply -auto-approve -input=false tfplan
 
       - name: Generate Terraform Outputs File
         if: ${{ github.event.inputs.destroy == 'false' }}
         run: |
-          cd ${{ env.TF_DIR }}
-          # استخراج كل الـ outputs كما هي في ملفات الـ tf الخاصة بك
+          cd "$TF_DIR"
           terraform output -json > ../tf-outputs.json
 
       - name: Upload Terraform Outputs Artifact

@@ -1,0 +1,49 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: platform-ingress
+  namespace: default 
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/proxy-body-size: "512m"
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          # 1. التطبيق الخاص بك (Manar App)
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: manar-app-service
+                port:
+                  number: 80
+
+          # 2. ArgoCD (تأكدي أنه في namespace default أو عدلي الـ service ليكون cross-namespace)
+          - path: /argocd
+            pathType: Prefix
+            backend:
+              service:
+                name: argocd-server
+                port:
+                  number: 80
+
+          # 3. Nexus (لو لسه محتاجاه كـ Proxy أو للمستقبل)
+          - path: /nexus
+            pathType: Prefix
+            backend:
+              service:
+                name: nexus-repository-manager # تأكدي من الاسم الصحيح للـ service
+                port:
+                  number: 8081
+
+          # 4. SonarQube
+          - path: /sonar
+            pathType: Prefix
+            backend:
+              service:
+                name: sonarqube-sonarqube # تأكدي من الاسم الصحيح للـ service
+                port:
+                  number: 9000

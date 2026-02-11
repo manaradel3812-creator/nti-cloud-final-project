@@ -1,0 +1,16 @@
+nodeSelector:
+  workload: stateful
+
+persistence:
+  enabled: true
+  storageClass: efs-sc
+  size: 20Gi
+
+deployment:
+  resources:
+    requests:
+      memory: "2Gi"
+      cpu: "1000m"
+    limits:
+      memory: "4Gi"
+      cpu: "2000m"
