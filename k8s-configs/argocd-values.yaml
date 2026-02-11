@@ -1,0 +1,17 @@
+server:
+  service:
+    type: ClusterIP
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    hosts:
+      - host: ""           # لو ما عندكش دومين حقيقي
+        paths:
+          - path: /argocd
+            pathType: Prefix
+    annotations:
+      kubernetes.io/ingress.class: nginx
+
+configs:
+  secret:
+    argocdServerAdminPassword: "MyStrongPassword123"  # يمكنك تغييره حسب الحاجة
