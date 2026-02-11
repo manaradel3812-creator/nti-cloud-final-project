@@ -2,28 +2,26 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: platform-ingress
-  namespace: ingress-nginx
+  namespace: default 
   annotations:
     kubernetes.io/ingress.class: "nginx"
     nginx.ingress.kubernetes.io/ssl-redirect: "false"
-    # مهم جداً لـ Nexus و SonarQube للسماح برفع الملفات الكبيرة
     nginx.ingress.kubernetes.io/proxy-body-size: "512m"
-    # لضمان عمل المسارات الفرعية بشكل صحيح
-    nginx.ingress.kubernetes.io/rewrite-target: /
 spec:
   ingressClassName: nginx
   rules:
     - http:
         paths:
-          # التطبيق الأساسي
+          # 1. التطبيق الخاص بك (Manar App)
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: hello-app-service
+                name: manar-app-service
                 port:
                   number: 80
-          # أداة ArgoCD
+
+          # 2. ArgoCD (تأكدي أنه في namespace default أو عدلي الـ service ليكون cross-namespace)
           - path: /argocd
             pathType: Prefix
             backend:
@@ -31,19 +29,21 @@ spec:
                 name: argocd-server
                 port:
                   number: 80
-          # مخزن Nexus
+
+          # 3. Nexus (لو لسه محتاجاه كـ Proxy أو للمستقبل)
           - path: /nexus
             pathType: Prefix
             backend:
               service:
-                name: nexus-repository-manager
+                name: nexus-repository-manager # تأكدي من الاسم الصحيح للـ service
                 port:
                   number: 8081
-          # أداة SonarQube
+
+          # 4. SonarQube
           - path: /sonar
             pathType: Prefix
             backend:
               service:
-                name: sonarqube-sonarqube
+                name: sonarqube-sonarqube # تأكدي من الاسم الصحيح للـ service
                 port:
                   number: 9000

@@ -1,8 +1,11 @@
 replicaCount: 1
 
+# values.yaml
 image:
-  repository: ""
-  tag: ""
+  repository: 389068786981.dkr.ecr.us-east-1.amazonaws.com/manar-app 
+  tag: latest
+  pullPolicy: Always
+
 
 service:
   type: ClusterIP  # 👈 لازم يكون داخلي عشان الـ NGINX هو اللي يكلمه

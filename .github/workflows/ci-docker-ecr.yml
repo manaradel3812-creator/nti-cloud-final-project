@@ -92,13 +92,14 @@ jobs:
       # 7️⃣ Build, Tag, and Push Docker image to ECR
       - name: Build and Push Image to ECR
         run: |
-          cd appmanar
           # لو الملف باسم Dokerfile غير اسم Dockerfile
           if [ -f "Dokerfile" ]; then mv Dokerfile Dockerfile; fi
-
+          if [ -f "${{ github.workspace }}/appmanar/Dokerfile" ]; then
+            mv "${{ github.workspace }}/appmanar/Dokerfile" "${{ github.workspace }}/appmanar/Dockerfile"
+          fi
           # Build image
-          docker build -t ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} .
-
+          docker build -t ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} "${{ github.workspace }}/appmanar"
+          
           # Tag latest
           docker tag ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} ${{ env.ECR_REPOSITORY }}:latest
 
@@ -121,9 +122,10 @@ jobs:
       # 🔟 Helm Upgrade/Install
       - name: Deploy to EKS via Helm
         run: |
-          helm upgrade --install manar-app ./helmchart/manar-app \
+          helm upgrade --install manarapp "${{ github.workspace }}/helmchart" \
             --namespace default \
             --create-namespace \
             --set image.repository=${{ env.ECR_REPOSITORY }} \
             --set image.tag=${{ env.IMAGE_TAG }} \
+            --set replicaCount=1 \
             --wait --timeout 5m0s
