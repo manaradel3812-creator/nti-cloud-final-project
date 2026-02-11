@@ -36,7 +36,7 @@ jobs:
           path: .
           workflow_conclusion: success
           search_artifacts: true
-
+      
       # 3️⃣ Parse Terraform Outputs
       - name: Parse Terraform Outputs
         id: parse_vars
@@ -45,10 +45,29 @@ jobs:
             echo "❌ tf-outputs.json not found!"
             exit 1
           fi
+
+          # 👇 Kubernetes cluster info
           echo "CLUSTER_NAME=$(jq -r '.eks_cluster_name.value' tf-outputs.json)" >> $GITHUB_ENV
           echo "AWS_REGION=$(jq -r '.aws_region.value // "us-east-1"' tf-outputs.json)" >> $GITHUB_ENV
-          echo "ECR_REPOSITORY=$(jq -r '.ecr_repository_url.value' tf-outputs.json)" >> $GITHUB_ENV
+
+          # 👇 ECR repository URL dynamic fallback
+          ECR_REPO=$(jq -r '
+            if has("manar_app_ecr_url") then .manar_app_ecr_url.value
+            elif has("ecr_repository_url") then .ecr_repository_url.value
+            else empty
+            end
+          ' tf-outputs.json)
+
+          if [ -z "$ECR_REPO" ]; then
+            echo "❌ No ECR repository URL found in Terraform outputs!"
+            exit 1
+          fi
+
+          echo "ECR_REPOSITORY=$ECR_REPO" >> $GITHUB_ENV
           echo "IMAGE_TAG=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_ENV
+
+          # ✅ debug
+          echo "ECR_REPOSITORY is set to $ECR_REPO"
 
       # 4️⃣ Configure AWS Credentials
       - name: Configure AWS Credentials

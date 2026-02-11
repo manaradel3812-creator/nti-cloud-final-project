@@ -1,8 +1,8 @@
 replicaCount: 1
 
 image:
-  repository: nginx
-  tag: latest
+  repository: ""
+  tag: ""
 
 service:
   type: ClusterIP  # 👈 لازم يكون داخلي عشان الـ NGINX هو اللي يكلمه

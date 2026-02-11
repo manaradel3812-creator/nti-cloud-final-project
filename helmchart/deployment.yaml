@@ -15,8 +15,8 @@ spec:
         app: {{ .Release.Name }}
     spec:
       containers:
-        - name: hello
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        - name: {{ .Release.Name }}
+          image: "{{ .Values.image.repository | default (env "ECR_REPOSITORY") }}:{{ .Values.image.tag | default (env "IMAGE_TAG") }}"
           ports:
             - containerPort: 80
           # 👇 الجزء ده "إجباري" للـ Fargate عشان الـ Pod ما يفضلش Pending
