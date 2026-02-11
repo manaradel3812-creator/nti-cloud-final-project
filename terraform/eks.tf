@@ -1,17 +1,18 @@
-##################################
-# 0️⃣ Data Sources
-##################################
-data "aws_eks_cluster" "cluster" {
-  name = var.eks_cluster_name
-}
+# ##################################
+# # 0️⃣ Data Sources
+# ##################################
+# data "aws_eks_cluster" "cluster" {
+#   name = var.eks_cluster_name
+# }
 
 ##################################
 # 1️⃣ Kubernetes Provider (EXEC)
 ##################################
 provider "kubernetes" {
-  host                   = data.aws_eks_cluster.cluster.endpoint
+  host = aws_eks_cluster.main.endpoint
+
   cluster_ca_certificate = base64decode(
-    data.aws_eks_cluster.cluster.certificate_authority[0].data
+    aws_eks_cluster.main.certificate_authority[0].data
   )
 
   exec {
@@ -21,10 +22,11 @@ provider "kubernetes" {
       "eks",
       "get-token",
       "--cluster-name",
-      var.eks_cluster_name
+      aws_eks_cluster.main.name
     ]
   }
 }
+
 
 ##################################
 # 2️⃣ EKS Cluster
