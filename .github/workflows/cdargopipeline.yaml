@@ -1,5 +1,12 @@
-name: CD Pipeline
+name: CD Pipeline with ArgoCD
+
 on:
+  workflow_run:
+    workflows: ["CI Docker + ECR + Helm Deployment"]
+    types:
+      - completed
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       deploy_mode:
@@ -10,37 +17,72 @@ on:
         options:
           - auto
           - manual
+      image_tag:
+        description: 'Image Tag (if manual)'
+        required: false
+        type: string
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # يشتغل بس لو CI نجح أو manual trigger
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    
     steps:
       # 1️⃣ Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          submodules: true
 
-      # 2️⃣ Download CI outputs artifact
-      - name: Download Terraform & ECR info from CI
-        uses: actions/download-artifact@v4
+      # 2️⃣ Download artifact from CI (للتشغيل التلقائي)
+      - name: Download CI outputs
+        if: github.event_name == 'workflow_run'
+        uses: dawidd6/action-download-artifact@v3
         with:
+          workflow: ci-docker-ecr.yaml
           name: terraform-outputs
           path: .
+          run_id: ${{ github.event.workflow_run.id }}
+
+      # 2️⃣b Download artifact manually (للتشغيل اليدوي)
+      - name: Download latest CI outputs (manual mode)
+        if: github.event_name == 'workflow_dispatch'
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          workflow: ci-docker-ecr.yaml
+          name: terraform-outputs
+          path: .
+          workflow_conclusion: success
+          search_artifacts: true
 
       # 3️⃣ Parse outputs
       - name: Parse CI outputs
         id: parse_outputs
         run: |
+          if [ ! -f "tf-outputs.json" ]; then
+            echo "❌ tf-outputs.json not found!"
+            exit 1
+          fi
+          
           CLUSTER_NAME=$(jq -r '.eks_cluster_name.value' tf-outputs.json)
           AWS_REGION=$(jq -r '.aws_region.value // "us-east-1"' tf-outputs.json)
           ECR_REPOSITORY=$(jq -r '.manar_app_ecr_url.value' tf-outputs.json)
-          IMAGE_TAG=$(jq -r '.image_tag.value // "'"${GITHUB_RUN_NUMBER}"'"' tf-outputs.json)
+          
+          # استخدام image_tag من input لو موجود، وإلا من الـ artifact
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ -n "${{ github.event.inputs.image_tag }}" ]; then
+            IMAGE_TAG="${{ github.event.inputs.image_tag }}"
+          else
+            IMAGE_TAG=$(jq -r '.image_tag.value' tf-outputs.json)
+          fi
           
           echo "CLUSTER_NAME=$CLUSTER_NAME" >> $GITHUB_ENV
           echo "AWS_REGION=$AWS_REGION" >> $GITHUB_ENV
           echo "ECR_REPOSITORY=$ECR_REPOSITORY" >> $GITHUB_ENV
           echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+          
+          echo "✅ Deployment config:"
+          echo "  Cluster: $CLUSTER_NAME"
+          echo "  Region: $AWS_REGION"
+          echo "  Image: $ECR_REPOSITORY:$IMAGE_TAG"
 
       # 4️⃣ Configure AWS Credentials
       - name: Configure AWS Credentials
@@ -65,7 +107,7 @@ jobs:
           vuln-type: os,library
           severity: CRITICAL,HIGH
 
-      # 7️⃣ Manual Approval (للبيئة الإنتاجية)
+      # 7️⃣ Manual Approval (للوضع اليدوي فقط)
       - name: Manual Approval Gate
         if: ${{ github.event.inputs.deploy_mode == 'manual' }}
         uses: trstringer/manual-approval@v1
@@ -73,23 +115,37 @@ jobs:
           secret: ${{ github.TOKEN }}
           approvers: manaradel3812-creator
           minimum-approvals: 1
-          issue-title: "Deploying image ${{ env.IMAGE_TAG }} to production"
+          issue-title: "🚀 Deploy image ${{ env.IMAGE_TAG }} to production"
+          issue-body: |
+            **Deployment Request**
+            - Image: `${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}`
+            - Cluster: `${{ env.CLUSTER_NAME }}`
+            - Region: `${{ env.AWS_REGION }}`
+            
+            Please review and approve to proceed.
 
       # 8️⃣ Checkout GitOps repository
       - name: Checkout GitOps repository
         run: |
-          git clone https://${{ secrets.GITOPS_TOKEN }}@github.com/manaradel3812-creator/nti-cloud-final-project.git
+          git clone https://${{ secrets.GITOPS_TOKEN }}@github.com/manaradel3812-creator/nti-cloud-final-project.git gitops-repo
 
-      # 9️⃣ Update Helm values.yaml with new image tag
+      # 9️⃣ Update Helm values.yaml
       - name: Update Helm values.yaml
         run: |
-          cd nti-cloud-final-project
-          sed -i "s/tag: .*/tag: \"${{ env.IMAGE_TAG }}\"/g" charts/hello-app/values.yaml
+          cd gitops-repo
           
+          # تحديث image tag في values.yaml
+          sed -i "s|tag:.*|tag: \"${{ env.IMAGE_TAG }}\"|g" charts/hello-app/values.yaml
+          
+          # عرض التغييرات
+          echo "📝 Updated values.yaml:"
+          grep -A2 "image:" charts/hello-app/values.yaml
+          
+          # Commit & Push
           git config --global user.email "action@github.com"
           git config --global user.name "GitHub Action"
           git add charts/hello-app/values.yaml
-          git commit -m "Update image tag to ${{ env.IMAGE_TAG }} [skip ci]" || echo "No changes to commit"
+          git commit -m "🚀 Update image tag to ${{ env.IMAGE_TAG }} [skip ci]" || echo "No changes to commit"
           git push origin main
 
       # 🔟 Setup kubectl
@@ -107,14 +163,43 @@ jobs:
             --region ${{ env.AWS_REGION }} \
             --name ${{ env.CLUSTER_NAME }}
 
-      # 1️⃣3️⃣ Apply ArgoCD Application YAML
+      # 1️⃣3️⃣ Verify ArgoCD is installed
+      - name: Check ArgoCD installation
+        run: |
+          if ! kubectl get namespace argocd &>/dev/null; then
+            echo "⚠️ ArgoCD namespace not found! Installing..."
+            kubectl create namespace argocd
+            kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+            echo "✅ ArgoCD installed. Waiting for pods..."
+            kubectl wait --for=condition=Ready pods --all -n argocd --timeout=300s
+          else
+            echo "✅ ArgoCD already installed"
+          fi
+
+      # 1️⃣4️⃣ Apply ArgoCD Application
       - name: Apply ArgoCD Application
         run: |
-          kubectl apply -f nti-cloud-final-project/k8s-configs/argocd-app.yaml
+          kubectl apply -f gitops-repo/k8s-configs/argocd-app.yaml
+          
+          echo "✅ ArgoCD Application deployed!"
+          echo "🔄 ArgoCD will sync the changes automatically..."
 
-      # 1️⃣4️⃣ Verify Deployment
+      # 1️⃣5️⃣ Wait for ArgoCD sync
+      - name: Wait for ArgoCD sync
+        run: |
+          echo "⏳ Waiting for ArgoCD to detect changes..."
+          sleep 30
+          
+          # عرض حالة الـ application
+          kubectl get application -n argocd 2>/dev/null || echo "ArgoCD app not ready yet"
+
+      # 1️⃣6️⃣ Verify Deployment
       - name: Verify deployment
         run: |
-          echo "Waiting for ArgoCD to sync..."
-          sleep 30
+          echo "📊 Deployment Status:"
           kubectl get pods -n default
+          kubectl get svc -n default
+          kubectl get ingress -n default
+          
+          echo ""
+          echo "🎯 Image deployed: ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}"
