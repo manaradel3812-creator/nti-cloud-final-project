@@ -1,17 +1,58 @@
-server:
-  service:
-    type: ClusterIP
-  ingress:
-    enabled: true
-    ingressClassName: nginx
-    hosts:
-      - host: ""           # لو ما عندكش دومين حقيقي
-        paths:
-          - path: /argocd
-            pathType: Prefix
-    annotations:
-      kubernetes.io/ingress.class: nginx
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: manar-app
+  namespace: argocd
+spec:
+  project: default
+  
+  source:
+    repoURL: https://github.com/manaradel3812-creator/nti-cloud-final-project.git
+    targetRevision: main
+    path: charts/hello-app
+    helm:
+      valueFiles:
+        - values.yaml
+  
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default
+  
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+```
 
-configs:
-  secret:
-    argocdServerAdminPassword: "MyStrongPassword123"  # يمكنك تغييره حسب الحاجة
+---
+
+## 🎯 كيف يشتغل الآن:
+
+### **سيناريو 1: تشغيل تلقائي** 
+```
+1. تعملي push على main
+2. CI يشتغل → يبني الصورة ويرفعها ECR
+3. CI ينجح → يرفع artifact فيه البيانات
+4. CD يشتغل تلقائياً بعد نجاح CI
+5. Trivy يفحص الصورة
+6. يحدّث GitOps repo
+7. ArgoCD يكتشف التغيير ويعمل sync تلقائي
+```
+
+### **سيناريو 2: تشغيل يدوي**
+```
+1. تروحي Actions → CD Pipeline → Run workflow
+2. تختاري manual mode
+3. تحطي image tag معين (اختياري)
+4. Trivy يفحص
+5. يطلع issue للموافقة
+6. بعد الموافقة → يكمل النشر
