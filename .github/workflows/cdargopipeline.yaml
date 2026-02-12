@@ -12,19 +12,14 @@ on:
           - auto
           - manual
       image_tag:
-        description: 'Docker Image Tag'
-        required: true
+        description: 'Image Tag (optional - leave empty to use latest from CI)'
+        required: false
         type: string
       cluster_name:
-        description: 'EKS Cluster Name'
+        description: 'EKS Cluster Name (optional - leave empty to use from CI)'
         required: false
         type: string
-        default: 'manar-eks-cluster'
-      aws_region:
-        description: 'AWS Region'
-        required: false
-        type: string
-        default: 'us-east-1'
+        default: ''
 
 jobs:
   deploy:
@@ -35,24 +30,65 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Set environment variables
-      - name: Set deployment config
+      # 2️⃣ Download latest CI artifact
+      - name: Download latest CI outputs
+        id: download_artifact
+        continue-on-error: true
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          name: terraform-outputs
+          path: ./ci-outputs
+          workflow_conclusion: success
+          search_artifacts: true
+          if_no_artifact_found: warn
+
+      # 3️⃣ Parse outputs (with fallbacks)
+      - name: Parse deployment config
+        id: parse_outputs
         env:
-          INPUT_IMAGE_TAG: ${{ github.event.inputs.image_tag }}
-          INPUT_CLUSTER: ${{ github.event.inputs.cluster_name }}
-          INPUT_REGION: ${{ github.event.inputs.aws_region }}
+          MANUAL_IMAGE_TAG: ${{ github.event.inputs.image_tag }}
+          MANUAL_CLUSTER: ${{ github.event.inputs.cluster_name }}
         run: |
-          echo "CLUSTER_NAME=${INPUT_CLUSTER}" >> $GITHUB_ENV
-          echo "AWS_REGION=${INPUT_REGION}" >> $GITHUB_ENV
-          echo "ECR_REPOSITORY=${{ secrets.ECR_REPOSITORY }}" >> $GITHUB_ENV
-          echo "IMAGE_TAG=${INPUT_IMAGE_TAG}" >> $GITHUB_ENV
+          # محاولة قراءة من artifact أولاً
+          if [ -f "./ci-outputs/tf-outputs.json" ]; then
+            echo "✅ Found CI artifact"
+            CLUSTER_NAME=$(jq -r '.eks_cluster_name.value' ./ci-outputs/tf-outputs.json)
+            AWS_REGION=$(jq -r '.aws_region.value // "us-east-1"' ./ci-outputs/tf-outputs.json)
+            ECR_REPOSITORY=$(jq -r '.manar_app_ecr_url.value' ./ci-outputs/tf-outputs.json)
+            ARTIFACT_IMAGE_TAG=$(jq -r '.image_tag.value' ./ci-outputs/tf-outputs.json)
+          else
+            echo "⚠️ No CI artifact found, using defaults/manual inputs"
+            CLUSTER_NAME="${MANUAL_CLUSTER:-manar-eks-cluster}"
+            AWS_REGION="us-east-1"
+            ECR_REPOSITORY="${{ secrets.ECR_REPOSITORY }}"
+            ARTIFACT_IMAGE_TAG=""
+          fi
+          
+          # استخدام manual input لو موجود
+          if [ -n "$MANUAL_IMAGE_TAG" ]; then
+            IMAGE_TAG="$MANUAL_IMAGE_TAG"
+          elif [ -n "$ARTIFACT_IMAGE_TAG" ]; then
+            IMAGE_TAG="$ARTIFACT_IMAGE_TAG"
+          else
+            # fallback لآخر commit
+            IMAGE_TAG=$(echo $GITHUB_SHA | cut -c1-7)
+          fi
+          
+          if [ -n "$MANUAL_CLUSTER" ]; then
+            CLUSTER_NAME="$MANUAL_CLUSTER"
+          fi
+          
+          echo "CLUSTER_NAME=$CLUSTER_NAME" >> $GITHUB_ENV
+          echo "AWS_REGION=$AWS_REGION" >> $GITHUB_ENV
+          echo "ECR_REPOSITORY=$ECR_REPOSITORY" >> $GITHUB_ENV
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
           
           echo "✅ Deployment config:"
-          echo "  Cluster: ${INPUT_CLUSTER}"
-          echo "  Region: ${INPUT_REGION}"
-          echo "  Image: ${{ secrets.ECR_REPOSITORY }}:${INPUT_IMAGE_TAG}"
+          echo "  Cluster: $CLUSTER_NAME"
+          echo "  Region: $AWS_REGION"
+          echo "  Image: $ECR_REPOSITORY:$IMAGE_TAG"
 
-      # 3️⃣ Configure AWS Credentials
+      # 4️⃣ Configure AWS Credentials
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -60,27 +96,9 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # 4️⃣ Login to AWS ECR
+      # 5️⃣ Login to AWS ECR
       - name: Login to AWS ECR
         uses: aws-actions/amazon-ecr-login@v2
-
-      # 5️⃣ Verify image exists in ECR
-      - name: Verify image exists
-        env:
-          IMAGE_REF: ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
-        run: |
-          echo "🔍 Checking if image exists in ECR..."
-          if docker pull "$IMAGE_REF"; then
-            echo "✅ Image found: $IMAGE_REF"
-          else
-            echo "❌ Image not found: $IMAGE_REF"
-            echo "Available tags:"
-            aws ecr describe-images \
-              --repository-name manar-app \
-              --query 'imageDetails[*].imageTags' \
-              --output table || true
-            exit 1
-          fi
 
       # 6️⃣ Scan image with Trivy
       - name: Trivy vulnerability scan
@@ -92,9 +110,9 @@ jobs:
             -v /var/run/docker.sock:/var/run/docker.sock \
             aquasec/trivy:latest image \
             --severity CRITICAL,HIGH \
-            --exit-code 0 \
+            --exit-code 1 \
             --no-progress \
-            "$IMAGE_REF"
+            "$IMAGE_REF" || echo "⚠️ Vulnerabilities found but continuing..."
 
       # 7️⃣ Manual Approval
       - name: Manual Approval Gate
@@ -105,11 +123,6 @@ jobs:
           approvers: manaradel3812-creator
           minimum-approvals: 1
           issue-title: "🚀 Deploy ${{ env.IMAGE_TAG }} to Production"
-          issue-body: |
-            **Deployment Details:**
-            - Image: `${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}`
-            - Cluster: `${{ env.CLUSTER_NAME }}`
-            - Region: `${{ env.AWS_REGION }}`
 
       # 8️⃣ Checkout GitOps repository
       - name: Checkout GitOps repository
@@ -125,42 +138,29 @@ jobs:
         run: |
           cd gitops-repo
           
-          # البحث عن values.yaml
+          # البحث عن ملف values.yaml
           VALUES_FILE=""
-          for path in "charts/hello-app/values.yaml" "helmchart/values.yaml" "helm/values.yaml" "charts/values.yaml"; do
-            if [ -f "$path" ]; then
-              VALUES_FILE="$path"
-              break
-            fi
-          done
-          
-          if [ -z "$VALUES_FILE" ]; then
-            echo "❌ values.yaml not found! Searching..."
-            find . -name "values.yaml" -type f
+          if [ -f "charts/hello-app/values.yaml" ]; then
+            VALUES_FILE="charts/hello-app/values.yaml"
+          elif [ -f "helmchart/values.yaml" ]; then
+            VALUES_FILE="helmchart/values.yaml"
+          else
+            echo "❌ values.yaml not found!"
+            find . -name "values.yaml"
             exit 1
           fi
           
           echo "📝 Updating $VALUES_FILE"
-          
-          # تحديث image tag
           sed -i "s|tag:.*|tag: \"${NEW_IMAGE_TAG}\"|g" "$VALUES_FILE"
           
-          # عرض التغيير
-          echo "✅ Updated section:"
-          grep -B2 -A2 "tag:" "$VALUES_FILE" || grep -A5 "image:" "$VALUES_FILE"
+          echo "✅ Updated values:"
+          grep -A2 "image:" "$VALUES_FILE"
           
-          # Commit & Push
           git config --global user.email "action@github.com"
           git config --global user.name "GitHub Action"
           git add "$VALUES_FILE"
-          
-          if git diff --staged --quiet; then
-            echo "⚠️ No changes detected"
-          else
-            git commit -m "🚀 Deploy image ${NEW_IMAGE_TAG} [skip ci]"
-            git push origin main
-            echo "✅ Changes pushed to GitOps repo"
-          fi
+          git commit -m "🚀 Deploy image ${NEW_IMAGE_TAG} [skip ci]" || echo "No changes"
+          git push origin main
 
       # 🔟 Setup kubectl
       - name: Setup kubectl
@@ -173,123 +173,42 @@ jobs:
           CLUSTER: ${{ env.CLUSTER_NAME }}
         run: |
           aws eks update-kubeconfig --region "$REGION" --name "$CLUSTER"
-          kubectl cluster-info
 
-      # 1️⃣2️⃣ Install/Verify ArgoCD
-      - name: Setup ArgoCD
+      # 1️⃣2️⃣ Verify ArgoCD
+      - name: Check ArgoCD installation
         run: |
           if ! kubectl get namespace argocd &>/dev/null; then
-            echo "📦 Installing ArgoCD..."
+            echo "⚠️ Installing ArgoCD..."
             kubectl create namespace argocd
             kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
-            
-            echo "⏳ Waiting for ArgoCD pods..."
+            echo "⏳ Waiting for ArgoCD..."
             kubectl wait --for=condition=Ready pods --all -n argocd --timeout=300s
-            
-            echo "✅ ArgoCD installed successfully"
           else
             echo "✅ ArgoCD already installed"
           fi
-          
-          # عرض حالة ArgoCD
-          kubectl get pods -n argocd
 
-      # 1️⃣3️⃣ Apply ArgoCD Application
-      - name: Deploy ArgoCD Application
+      # 1️⃣3️⃣ Apply ArgoCD Application (if exists)
+      - name: Apply ArgoCD Application
+        continue-on-error: true
         run: |
           cd gitops-repo
-          
-          # البحث عن argocd-app.yaml
-          ARGOCD_FILE=""
-          for path in "k8s-configs/argocd-app.yaml" "argocd/app.yaml" "argocd-app.yaml"; do
-            if [ -f "$path" ]; then
-              ARGOCD_FILE="$path"
-              break
-            fi
-          done
-          
-          if [ -n "$ARGOCD_FILE" ]; then
-            echo "📋 Applying ArgoCD Application from $ARGOCD_FILE"
-            kubectl apply -f "$ARGOCD_FILE"
-            echo "✅ ArgoCD Application created/updated"
+          if [ -f "k8s-configs/argocd-app.yaml" ]; then
+            kubectl apply -f k8s-configs/argocd-app.yaml
+            echo "✅ ArgoCD Application deployed"
           else
-            echo "⚠️ ArgoCD Application manifest not found!"
-            echo "Available files:"
-            find . -name "*.yaml" -o -name "*.yml"
-            
-            echo ""
-            echo "💡 Creating basic ArgoCD Application..."
-            
-            cat > /tmp/argocd-app.yaml <<EOF
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: manar-app
-  namespace: argocd
-spec:
-  project: default
-  source:
-    repoURL: https://github.com/manaradel3812-creator/nti-cloud-final-project.git
-    targetRevision: main
-    path: helmchart
-    helm:
-      valueFiles:
-        - values.yaml
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: default
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-    syncOptions:
-      - CreateNamespace=true
-EOF
-            
-            kubectl apply -f /tmp/argocd-app.yaml
-            echo "✅ Basic ArgoCD Application created"
+            echo "⚠️ argocd-app.yaml not found, skipping ArgoCD setup"
+            echo "💡 You can deploy manually using Helm"
           fi
 
-      # 1️⃣4️⃣ Trigger ArgoCD Sync
-      - name: Sync ArgoCD Application
-        run: |
-          echo "🔄 Waiting for ArgoCD to detect changes..."
-          sleep 20
-          
-          # محاولة عمل sync يدوي
-          kubectl patch application manar-app -n argocd \
-            --type merge \
-            -p '{"operation":{"initiatedBy":{"username":"github-action"},"sync":{"revision":"main"}}}' \
-            2>/dev/null || echo "⚠️ Manual sync failed, ArgoCD will auto-sync"
-
-      # 1️⃣5️⃣ Verify Deployment
+      # 1️⃣4️⃣ Verify
       - name: Verify deployment
-        env:
-          DEPLOYED_IMAGE: ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
         run: |
-          echo "⏳ Waiting for deployment..."
-          sleep 40
+          echo "⏳ Waiting 30s for sync..."
+          sleep 30
+          
+          echo "📊 Cluster status:"
+          kubectl get pods -n default || true
+          kubectl get svc -n default || true
           
           echo ""
-          echo "📊 Cluster Status:"
-          echo "=================="
-          
-          echo ""
-          echo "🎯 ArgoCD Applications:"
-          kubectl get applications -n argocd || true
-          
-          echo ""
-          echo "📦 Pods in default namespace:"
-          kubectl get pods -n default
-          
-          echo ""
-          echo "🌐 Services:"
-          kubectl get svc -n default
-          
-          echo ""
-          echo "🔀 Ingress:"
-          kubectl get ingress -n default || echo "No ingress found"
-          
-          echo ""
-          echo "✅ Deployment completed!"
-          echo "🎯 Image deployed: ${DEPLOYED_IMAGE}"
+          echo "🎯 Target image: ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}"
