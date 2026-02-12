@@ -1,80 +1,106 @@
 name: CD Pipeline
 
 on:
-  push:
-    branches: [ main ]
-  workflow_dispatch: # لتشغيل يدوي
+  workflow_dispatch:
     inputs:
       deploy_mode:
-        description: 'اختر نوع النشر'
+        description: 'Deployment Mode'
         required: true
         default: 'auto'
         type: choice
         options:
           - auto
           - manual
-jobs:
-  build-and-deploy:
-    runs-on: ubuntu-latest
-    outputs:
-      CLUSTER_NAME: ${{ steps.parse_vars.outputs.cluster_name }}
-      AWS_REGION: ${{ steps.parse_vars.outputs.aws_region }}
-      ECR_REPOSITORY: ${{ steps.parse_vars.outputs.ecr_repo }}
-      IMAGE_TAG: ${{ steps.parse_vars.outputs.image_tag }}
 
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
     steps:
-      - name: Parse Terraform Outputs
-        id: parse_vars
+
+      # 1️⃣ Checkout repository
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      # 2️⃣ Download CI outputs artifact (if CI workflow uploaded it)
+      - name: Download Terraform & ECR info from CI
+        uses: actions/download-artifact@v3
+        with:
+          name: terraform-outputs
+          path: .
+
+      # 3️⃣ Parse outputs
+      - name: Parse CI outputs
+        id: parse_outputs
         run: |
           CLUSTER_NAME=$(jq -r '.eks_cluster_name.value' tf-outputs.json)
           AWS_REGION=$(jq -r '.aws_region.value // "us-east-1"' tf-outputs.json)
-          ECR_REPO=$(jq -r '.manar_app_ecr_url.value')
-          IMAGE_TAG=$(echo $GITHUB_SHA | cut -c1-7)
+          ECR_REPOSITORY=$(jq -r '.manar_app_ecr_url.value' tf-outputs.json)
+          IMAGE_TAG=$(jq -r '.image_tag.value // "'"${GITHUB_RUN_NUMBER}"'"')
 
-          echo "::set-output name=cluster_name::$CLUSTER_NAME"
-          echo "::set-output name=aws_region::$AWS_REGION"
-          echo "::set-output name=ecr_repo::$ECR_REPO"
-          echo "::set-output name=image_tag::$IMAGE_TAG"
+          echo "CLUSTER_NAME=$CLUSTER_NAME" >> $GITHUB_ENV
+          echo "AWS_REGION=$AWS_REGION" >> $GITHUB_ENV
+          echo "ECR_REPOSITORY=$ECR_REPOSITORY" >> $GITHUB_ENV
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
 
-
-
-      # 1️⃣ تسجيل الدخول إلى ECR (ضروري لـ Trivy)
-      - name: Login to AWS ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
+      # 4️⃣ Configure AWS Credentials
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          region: ${{ env.AWS_REGION }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
 
+      # 5️⃣ Login to AWS ECR
+      - name: Login to AWS ECR
+        uses: aws-actions/amazon-ecr-login@v2
+        env:
+          AWS_REGION: ${{ env.AWS_REGION }}
 
-      # 2️⃣ Scan الصورة باستخدام Trivy
-      - name: Run Trivy vulnerability scanner
+      # 6️⃣ Scan image with Trivy
+      - name: Trivy vulnerability scan
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: '${{ steps.login-ecr.outputs.registry }}/hello-app:${{ github.run_number }}'
-          format: 'table'
-          exit-code: '1'
+          image-ref: "${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}"
+          format: table
+          exit-code: 1
           ignore-unfixed: true
-          vuln-type: 'os,library'
-          severity: 'CRITICAL,HIGH'
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
 
-      # 3️⃣ تحديث GitOps Repository (Helm values.yaml)
-      - name: Update GitOps Repository
-        if: github.event.inputs.deploy_mode == 'auto' || github.event_name == 'push'
+      # 7️⃣ Checkout GitOps repo
+      - name: Checkout GitOps repository
         run: |
+          git clone https://${{ secrets.GITOPS_TOKEN }}@github.com/manaradel3812-creator/nti-cloud-final-project.git
+
+      # 8️⃣ Update Helm values.yaml with new image tag
+      - name: Update Helm values.yaml
+        run: |
+          cd gitops-repo
+          sed -i "s/tag: .*/tag: \"${{ env.IMAGE_TAG }}\"/g" charts/hello-app/values.yaml
           git config --global user.email "action@github.com"
           git config --global user.name "GitHub Action"
-
-          git clone https://${{ secrets.GITOPS_TOKEN }}@github.com/manaradel3812-creator/nti-cloud-final-project.git
-          cd gitops-repo
-
-          # تحديث التاج في Helm values.yaml
-          sed -i "s/tag: .*/tag: \"${{ github.run_number }}\"/g" charts/hello-app/values.yaml
-
-          git add .
-          git commit -m "Update image tag to ${{ github.run_number }} [skip ci]"
+          git add charts/hello-app/values.yaml
+          git commit -m "Update image tag to ${{ env.IMAGE_TAG }} [skip ci]" || echo "No changes to commit"
           git push origin main
 
-      # 4️⃣ Apply Argo CD Application YAML (اختياري إذا مش موجود ArgoCD)
+      # 9️⃣ Setup kubectl
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+
+      # 🔟 Setup Helm
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+
+      # 1️⃣1️⃣ Update kubeconfig
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ env.AWS_REGION }} \
+            --name ${{ env.CLUSTER_NAME }}
+
+      # 1️⃣2️⃣ Apply ArgoCD Application YAML
       - name: Apply ArgoCD Application
         run: |
-          kubectl apply -f k8s-configs/argocd-app.yaml
+          kubectl apply -f gitops-repo/k8s-configs/argocd-app.yaml
