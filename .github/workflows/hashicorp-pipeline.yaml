@@ -1,0 +1,80 @@
+name: Secrets Deploy Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform_artifact:
+        description: 'Platform Terraform outputs artifact name'
+        required: true
+        default: 'terraform-outputs'
+
+env:
+  AWS_REGION: us-east-1
+  VAULT_NAMESPACE: vault
+  ESO_NAMESPACE: external-secrets
+
+jobs:
+  deploy-secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Download Platform Terraform outputs
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          workflow: platform-pipeline.yml
+          name: ${{ github.event.inputs.platform_artifact }}
+          path: .
+          search_artifacts: true
+
+      - name: Set environment variables from outputs
+        run: |
+          CLUSTER=$(jq -r '.eks_cluster_name.value' tf-outputs.json)
+          echo "CLUSTER_NAME=$CLUSTER" >> $GITHUB_ENV
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set up kubectl & Helm
+        uses: azure/setup-kubectl@v4
+      - uses: azure/setup-helm@v4
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+
+      - name: Install Vault
+        run: |
+          helm repo add hashicorp https://helm.releases.hashicorp.com
+          helm repo update
+          kubectl create namespace ${{ env.VAULT_NAMESPACE }} || true
+          helm upgrade --install vault hashicorp/vault --namespace ${{ env.VAULT_NAMESPACE }} --set "server.dev.enabled=true"
+
+      - name: Configure Vault Auth + Roles + Policies
+        run: |
+          VAULT_POD=$(kubectl get pod -n ${{ env.VAULT_NAMESPACE }} -l app.kubernetes.io/name=vault -o jsonpath="{.items[0].metadata.name}")
+          kubectl exec -n ${{ env.VAULT_NAMESPACE }} $VAULT_POD -- vault auth enable kubernetes
+          # Config + example Role & Policy
+          kubectl exec -n ${{ env.VAULT_NAMESPACE }} $VAULT_POD -- vault write auth/kubernetes/role/myapp-role bound_service_account_names=myapp-sa bound_service_account_namespaces=default policies=myapp-policy ttl=24h
+
+      - name: Populate Vault KV Secrets
+        run: |
+          VAULT_POD=$(kubectl get pod -n ${{ env.VAULT_NAMESPACE }} -l app.kubernetes.io/name=vault -o jsonpath="{.items[0].metadata.name}")
+          kubectl exec -n ${{ env.VAULT_NAMESPACE }} $VAULT_POD -- vault kv put secret/myapp-db username="${{ secrets.DB_USER }}" password="${{ secrets.DB_PASSWORD }}"
+
+      - name: Install External Secrets Operator
+        run: |
+          helm repo add external-secrets https://charts.external-secrets.io
+          helm repo update
+          kubectl create namespace ${{ env.ESO_NAMESPACE }} || true
+          helm upgrade --install external-secrets external-secrets/external-secrets --namespace ${{ env.ESO_NAMESPACE }}
+
+      - name: Apply SecretStore & ExternalSecrets
+        run: |
+          kubectl apply -f k8s-configs/vault-secretstore.yaml
+          kubectl apply -f k8s-configs/appmanar-externalsecret.yaml
