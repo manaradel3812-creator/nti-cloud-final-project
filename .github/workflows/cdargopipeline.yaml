@@ -19,7 +19,7 @@ jobs:
 
       # 1️⃣ Checkout repository
       - name: Checkout repository
-        uses: actions/upload-artifact@v3
+        uses: actions/download-artifact@v3
         with:
           submodules: true
 
