@@ -147,6 +147,10 @@ jobs:
             -f k8s-configs/argocd-values.yaml \
             --set server.service.type=ClusterIP
 
+      - name: Delete Vault Mutating Webhook (Fix conflict)
+        run: |
+          kubectl delete mutatingwebhookconfiguration vault-agent-injector-cfg || true
+
       - name: Deploy Vault
         run: |
           helm repo add hashicorp https://helm.releases.hashicorp.com
