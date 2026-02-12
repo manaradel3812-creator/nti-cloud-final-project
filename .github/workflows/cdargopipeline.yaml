@@ -13,18 +13,30 @@ on:
         options:
           - auto
           - manual
-
 jobs:
-  deploy:
+  build-and-deploy:
     runs-on: ubuntu-latest
-    steps:
+    outputs:
+      CLUSTER_NAME: ${{ steps.parse_vars.outputs.cluster_name }}
+      AWS_REGION: ${{ steps.parse_vars.outputs.aws_region }}
+      ECR_REPOSITORY: ${{ steps.parse_vars.outputs.ecr_repo }}
+      IMAGE_TAG: ${{ steps.parse_vars.outputs.image_tag }}
 
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+    steps:
+      - name: Parse Terraform Outputs
+        id: parse_vars
+        run: |
+          CLUSTER_NAME=$(jq -r '.eks_cluster_name.value' tf-outputs.json)
+          AWS_REGION=$(jq -r '.aws_region.value // "us-east-1"' tf-outputs.json)
+          ECR_REPO=$(jq -r '.manar_app_ecr_url.value')
+          IMAGE_TAG=$(echo $GITHUB_SHA | cut -c1-7)
+
+          echo "::set-output name=cluster_name::$CLUSTER_NAME"
+          echo "::set-output name=aws_region::$AWS_REGION"
+          echo "::set-output name=ecr_repo::$ECR_REPO"
+          echo "::set-output name=image_tag::$IMAGE_TAG"
+
+
 
       # 1️⃣ تسجيل الدخول إلى ECR (ضروري لـ Trivy)
       - name: Login to AWS ECR
