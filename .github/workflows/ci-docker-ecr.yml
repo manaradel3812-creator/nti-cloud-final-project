@@ -113,6 +113,10 @@ jobs:
           aws eks update-kubeconfig \
             --region $AWS_REGION \
             --name $CLUSTER_NAME
+      - name: Delete old ingress if exists
+        run: |
+          kubectl delete ingress platform-ingress --namespace default --ignore-not-found
+
 
       # 1️⃣2️⃣ Delete old ingress (fix Helm ownership issue)
       - name: Delete old ingress if exists
