@@ -1,0 +1,87 @@
+name: Setup ArgoCD Image Updater
+
+on:
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  ARGOCD_NAMESPACE: argocd
+
+jobs:
+  setup-image-updater:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Get AWS Account ID
+        id: aws_account
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "ACCOUNT_ID=$ACCOUNT_ID" >> $GITHUB_ENV
+          echo "AWS Account: $ACCOUNT_ID"
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Update kubeconfig
+        run: |
+          CLUSTER_NAME=$(aws eks list-clusters --query 'clusters[0]' --output text)
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name $CLUSTER_NAME
+
+      - name: Install ArgoCD Image Updater
+        run: |
+          kubectl apply -n ${{ env.ARGOCD_NAMESPACE }} -f https://raw.githubusercontent.com/argoproj-labs/argocd-image-updater/stable/manifests/install.yaml
+
+      - name: Create ECR credentials secret
+        run: |
+          kubectl create secret generic argocd-image-updater-secret \
+            -n ${{ env.ARGOCD_NAMESPACE }} \
+            --from-literal=aws-access-key-id=${{ secrets.AWS_ACCESS_KEY_ID }} \
+            --from-literal=aws-secret-access-key=${{ secrets.AWS_SECRET_ACCESS_KEY }} \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Configure Image Updater for ECR
+        run: |
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: argocd-image-updater-config
+            namespace: ${{ env.ARGOCD_NAMESPACE }}
+          data:
+            registries.conf: |
+              registries:
+              - name: ECR
+                api_url: https://${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+                prefix: ${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+                credentials: ext:/scripts/ecr-login.sh
+                default: true
+          EOF
+
+      - name: Annotate Application for Auto-Update
+        run: |
+          kubectl patch application manar-app -n ${{ env.ARGOCD_NAMESPACE }} \
+            --type merge \
+            -p '{
+              "metadata": {
+                "annotations": {
+                  "argocd-image-updater.argoproj.io/image-list": "manar-app=${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/manar-app",
+                  "argocd-image-updater.argoproj.io/manar-app.update-strategy": "latest",
+                  "argocd-image-updater.argoproj.io/write-back-method": "git"
+                }
+              }
+            }'
+
+      - name: Verify Installation
+        run: |
+          echo "✅ ArgoCD Image Updater installed"
+          kubectl get pods -n ${{ env.ARGOCD_NAMESPACE }} -l app.kubernetes.io/name=argocd-image-updater
