@@ -23,6 +23,9 @@ jobs:
       - name: Login to AWS ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
+        with:
+          region: ${{ env.AWS_REGION }}
+
 
       # 2️⃣ Scan الصورة باستخدام Trivy
       - name: Run Trivy vulnerability scanner
