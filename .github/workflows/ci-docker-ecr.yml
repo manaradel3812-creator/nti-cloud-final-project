@@ -29,7 +29,7 @@ jobs:
         with:
           verbose: true
 
-      # 3️⃣ Semgrep Security Scan (FIXED)
+      # 3️⃣ Semgrep Security Scan
       - name: Security scan with Semgrep
         uses: returntocorp/semgrep-action@v1
         with:
@@ -114,7 +114,6 @@ jobs:
             --namespace default \
             --ignore-not-found
 
-
       # 1️⃣3️⃣ Deploy via Helm
       - name: Deploy to EKS via Helm
         run: |
@@ -125,7 +124,6 @@ jobs:
             --set image.tag=$IMAGE_TAG \
             --set replicaCount=1 \
             --wait --timeout 5m0s
-
 
       # 🆕 1️⃣4️⃣ Save outputs for CD Pipeline
       - name: Save deployment info for CD
