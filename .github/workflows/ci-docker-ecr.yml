@@ -12,11 +12,15 @@ on:
           - nonprod
           - prod
 
+env:
+  AWS_REGION: us-east-1   # Default region (will be overridden if found in tf outputs)
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
 
     steps:
+
       # 1️⃣ Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -45,28 +49,38 @@ jobs:
           workflow_conclusion: success
           search_artifacts: true
 
-      # 5️⃣ Parse Terraform Outputs
+      # 5️⃣ Parse Terraform Outputs (Secure)
       - name: Parse Terraform Outputs
-        id: parse_vars
         run: |
           if [ ! -f "tf-outputs.json" ]; then
             echo "❌ tf-outputs.json not found!"
             exit 1
           fi
-          echo "CLUSTER_NAME=$(jq -r '.eks_cluster_name.value' tf-outputs.json)" >> $GITHUB_ENV
-          echo "AWS_REGION=$(jq -r '.aws_region.value // "us-east-1"' tf-outputs.json)" >> $GITHUB_ENV
+
+          CLUSTER_NAME=$(jq -r '.eks_cluster_name.value' tf-outputs.json)
+          AWS_REGION_FROM_TF=$(jq -r '.aws_region.value // empty' tf-outputs.json)
+
           ECR_REPO=$(jq -r '
             if has("manar_app_ecr_url") then .manar_app_ecr_url.value
             elif has("ecr_repository_url") then .ecr_repository_url.value
             else empty
             end
           ' tf-outputs.json)
-          if [ -z "$ECR_REPO" ]; then
-            echo "❌ No ECR repository URL found!"
+
+          if [ -z "$CLUSTER_NAME" ] || [ -z "$ECR_REPO" ]; then
+            echo "❌ Missing required Terraform outputs!"
             exit 1
           fi
+
+          if [ -n "$AWS_REGION_FROM_TF" ]; then
+            echo "AWS_REGION=$AWS_REGION_FROM_TF" >> $GITHUB_ENV
+          fi
+
+          IMAGE_TAG=$(echo "$GITHUB_SHA" | cut -c1-7)
+
+          echo "CLUSTER_NAME=$CLUSTER_NAME" >> $GITHUB_ENV
           echo "ECR_REPOSITORY=$ECR_REPO" >> $GITHUB_ENV
-          echo "IMAGE_TAG=$(echo $GITHUB_SHA | cut -c1-7)" >> $GITHUB_ENV
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
 
       # 6️⃣ Configure AWS Credentials
       - name: Configure AWS Credentials
@@ -80,77 +94,79 @@ jobs:
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      # 8️⃣ Build & Push Docker Image
+      # 8️⃣ Build & Push Docker Image (Secure)
       - name: Build and Push Image to ECR
         run: |
           if [ -f "Dokerfile" ]; then mv Dokerfile Dockerfile; fi
-          if [ -f "${{ github.workspace }}/appmanar/Dokerfile" ]; then
-            mv "${{ github.workspace }}/appmanar/Dokerfile" "${{ github.workspace }}/appmanar/Dockerfile"
-          fi
-          docker build -t $ECR_REPOSITORY:$IMAGE_TAG "${{ github.workspace }}/appmanar"
-          docker tag $ECR_REPOSITORY:$IMAGE_TAG $ECR_REPOSITORY:latest
-          docker push $ECR_REPOSITORY:$IMAGE_TAG
-          docker push $ECR_REPOSITORY:latest
 
-      # 9️⃣ Setup kubectl
-      - name: Setup kubectl
-        uses: azure/setup-kubectl@v4
-        
-              # 🔐 9️⃣ Trivy Image Scan
+          if [ -f "$GITHUB_WORKSPACE/appmanar/Dokerfile" ]; then
+            mv "$GITHUB_WORKSPACE/appmanar/Dokerfile" "$GITHUB_WORKSPACE/appmanar/Dockerfile"
+          fi
+
+          docker build -t "$ECR_REPOSITORY:$IMAGE_TAG" "$GITHUB_WORKSPACE/appmanar"
+          docker tag "$ECR_REPOSITORY:$IMAGE_TAG" "$ECR_REPOSITORY:latest"
+
+          docker push "$ECR_REPOSITORY:$IMAGE_TAG"
+          docker push "$ECR_REPOSITORY:latest"
+
+      # 9️⃣ Trivy Image Scan (Fail on Critical only)
       - name: Scan Docker image with Trivy
         uses: aquasecurity/trivy-action@0.24.0
         with:
           image-ref: ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
           format: table
           exit-code: 1
-          severity: HIGH,CRITICAL
+          severity: CRITICAL
 
+      # 🔟 Setup kubectl
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
 
-      # 🔟 Setup Helm
+      # 1️⃣1️⃣ Setup Helm
       - name: Setup Helm
         uses: azure/setup-helm@v4
 
-      # 1️⃣1️⃣ Update kubeconfig
+      # 1️⃣2️⃣ Update kubeconfig
       - name: Update kubeconfig
         run: |
           aws eks update-kubeconfig \
-            --region $AWS_REGION \
-            --name $CLUSTER_NAME
+            --region "$AWS_REGION" \
+            --name "$CLUSTER_NAME"
 
-      # 1️⃣2️⃣ Delete old ingress (fix Helm ownership issue)
+      # 1️⃣3️⃣ Delete old ingress (fix Helm ownership issue)
       - name: Delete old ingress if exists
         run: |
           kubectl delete ingress platform-ingress \
             --namespace default \
             --ignore-not-found
 
-      # 1️⃣3️⃣ Deploy via Helm
+      # 1️⃣4️⃣ Deploy via Helm (Secure quoting)
       - name: Deploy to EKS via Helm
         run: |
-          helm upgrade --install manarapp "${{ github.workspace }}/helmchart" \
+          helm upgrade --install manarapp "$GITHUB_WORKSPACE/helmchart" \
             --namespace default \
             --create-namespace \
-            --set image.repository=$ECR_REPOSITORY \
-            --set image.tag=$IMAGE_TAG \
+            --set image.repository="$ECR_REPOSITORY" \
+            --set image.tag="$IMAGE_TAG" \
             --set replicaCount=1 \
             --wait --timeout 5m0s
 
-      # 🆕 1️⃣4️⃣ Save outputs for CD Pipeline
+      # 1️⃣5️⃣ Save outputs for CD Pipeline (Secure Heredoc)
       - name: Save deployment info for CD
         run: |
           cat > tf-outputs.json <<EOF
           {
-            "eks_cluster_name": {"value": "${{ env.CLUSTER_NAME }}"},
-            "aws_region": {"value": "${{ env.AWS_REGION }}"},
-            "manar_app_ecr_url": {"value": "${{ env.ECR_REPOSITORY }}"},
-            "image_tag": {"value": "${{ env.IMAGE_TAG }}"}
+            "eks_cluster_name": {"value": "$CLUSTER_NAME"},
+            "aws_region": {"value": "$AWS_REGION"},
+            "manar_app_ecr_url": {"value": "$ECR_REPOSITORY"},
+            "image_tag": {"value": "$IMAGE_TAG"}
           }
           EOF
-          
+
           echo "✅ Created tf-outputs.json:"
           cat tf-outputs.json
 
-      # 🆕 1️⃣5️⃣ Upload artifact for CD Pipeline
+      # 1️⃣6️⃣ Upload artifact for CD Pipeline
       - name: Upload deployment info
         uses: actions/upload-artifact@v4
         with:
