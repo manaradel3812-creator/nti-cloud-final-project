@@ -161,19 +161,106 @@ jobs:
         run: |
           kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=vault -n ${{ env.HELM_NAMESPACE_VAULT }} --timeout=300s
 
-      - name: Create Vault Policy
+      - name: Configure Vault - Enable Kubernetes Auth
+        run: |
+          VAULT_POD=$(kubectl get pod -n ${{ env.HELM_NAMESPACE_VAULT }} -l app.kubernetes.io/name=vault -o jsonpath="{.items[0].metadata.name}")
+          
+          # Enable Kubernetes auth method
+          kubectl exec -n ${{ env.HELM_NAMESPACE_VAULT }} $VAULT_POD -- vault auth enable kubernetes || true
+          
+          # Configure Kubernetes auth
+          kubectl exec -n ${{ env.HELM_NAMESPACE_VAULT }} $VAULT_POD -- /bin/sh -c "
+          vault write auth/kubernetes/config \
+            kubernetes_host='https://\$KUBERNETES_PORT_443_TCP_ADDR:443' \
+            kubernetes_ca_cert=@/var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
+            token_reviewer_jwt=@/var/run/secrets/kubernetes.io/serviceaccount/token
+          "
+
+      - name: Create Vault Policy for ESO
         run: |
           VAULT_POD=$(kubectl get pod -n ${{ env.HELM_NAMESPACE_VAULT }} -l app.kubernetes.io/name=vault -o jsonpath="{.items[0].metadata.name}")
           
           kubectl exec -n ${{ env.HELM_NAMESPACE_VAULT }} $VAULT_POD -- /bin/sh -c 'vault policy write myapp-policy - <<EOF
           path "secret/data/myapp/*" {
-            capabilities = ["create", "read", "update", "delete", "list"]
+            capabilities = ["read", "list"]
           }
           
           path "secret/metadata/myapp/*" {
             capabilities = ["list", "read"]
           }
           EOF'
+
+      - name: Create Vault Role for ESO
+        run: |
+          VAULT_POD=$(kubectl get pod -n ${{ env.HELM_NAMESPACE_VAULT }} -l app.kubernetes.io/name=vault -o jsonpath="{.items[0].metadata.name}")
+          
+          kubectl exec -n ${{ env.HELM_NAMESPACE_VAULT }} $VAULT_POD -- vault write auth/kubernetes/role/myapp-role \
+            bound_service_account_names=external-secrets-sa \
+            bound_service_account_namespaces=default,external-secrets \
+            policies=myapp-policy \
+            ttl=24h
+
+      - name: Store Sample Secrets in Vault
+        run: |
+          VAULT_POD=$(kubectl get pod -n ${{ env.HELM_NAMESPACE_VAULT }} -l app.kubernetes.io/name=vault -o jsonpath="{.items[0].metadata.name}")
+          
+          # Store sample database credentials
+          kubectl exec -n ${{ env.HELM_NAMESPACE_VAULT }} $VAULT_POD -- vault kv put secret/myapp/db \
+            username=dbuser \
+            password=SecureP@ssw0rd123
+          
+          # Store sample API keys
+          kubectl exec -n ${{ env.HELM_NAMESPACE_VAULT }} $VAULT_POD -- vault kv put secret/myapp/api \
+            api_key=sk-1234567890abcdef \
+            api_secret=secret-abcdefghijklmnop
+
+      - name: Deploy External Secrets Operator
+        run: |
+          helm repo add external-secrets https://charts.external-secrets.io
+          helm repo update
+          helm upgrade --install external-secrets external-secrets/external-secrets \
+            -n ${{ env.HELM_NAMESPACE_ES }} \
+            --create-namespace \
+            -f k8s-configs/eso-values.yaml \
+            --wait
+
+      - name: Wait for ESO to be ready
+        run: |
+          kubectl wait --for=condition=available deployment/external-secrets -n ${{ env.HELM_NAMESPACE_ES }} --timeout=300s
+          kubectl wait --for=condition=available deployment/external-secrets-webhook -n ${{ env.HELM_NAMESPACE_ES }} --timeout=300s
+
+      - name: Create ESO Service Account
+        run: |
+          kubectl apply -f k8s-configs/vault-serviceaccount.yaml
+
+      - name: Create Vault SecretStore
+        run: |
+          kubectl apply -f k8s-configs/vault-secret-store.yaml
+
+      - name: Create Sample ExternalSecret
+        run: |
+          kubectl apply -f k8s-configs/external-secret-example.yaml
+
+      - name: Verify ESO Integration
+        run: |
+          echo "Waiting for ExternalSecret to sync..."
+          sleep 30
+          
+          echo "Checking ExternalSecret status:"
+          kubectl get externalsecret myapp-db-secret -o yaml
+          
+          echo ""
+          echo "Checking if Kubernetes Secret was created:"
+          if kubectl get secret myapp-db-credentials; then
+            echo "✅ Secret successfully created by ESO!"
+            echo ""
+            echo "Secret contents (base64 decoded):"
+            echo "Username: $(kubectl get secret myapp-db-credentials -o jsonpath='{.data.username}' | base64 -d)"
+            echo "Password: $(kubectl get secret myapp-db-credentials -o jsonpath='{.data.password}' | base64 -d)"
+          else
+            echo "⚠️ Secret not found. Check ESO logs:"
+            kubectl logs -n external-secrets -l app.kubernetes.io/name=external-secrets --tail=50
+          fi
 
       - name: Deploy Nexus Repository
         run: |
@@ -218,6 +305,15 @@ jobs:
           kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
           echo -e "\n"
           echo "🔐 Vault Root Token: root"
+          echo "🔐 Vault URL: http://vault.vault.svc.cluster.local:8200"
+          echo ""
+          echo "🔑 External Secrets Operator Status:"
+          kubectl get pods -n ${{ env.HELM_NAMESPACE_ES }}
+          echo ""
+          echo "📦 Sample Secrets in Vault:"
+          echo "  - secret/myapp/db (username, password)"
+          echo "  - secret/myapp/api (api_key, api_secret)"
+          echo ""
           echo "🛠️  Nexus Namespace: ${{ env.HELM_NAMESPACE_NEXUS }}"
           echo "🛡️  SonarQube Namespace: ${{ env.HELM_NAMESPACE_SONAR }}"
           echo "====================================================" 
