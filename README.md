@@ -301,6 +301,146 @@ For issues and questions:
 - [ ] Implement disaster recovery procedures
 
 ---
+## 🔐 External Secrets Operator (ESO) Integration
+
+### Overview
+ESO automatically syncs secrets from HashiCorp Vault into Kubernetes Secrets, enabling:
+- **Centralized Secret Management**: All secrets stored in Vault
+- **Automatic Rotation**: Secrets update automatically when changed in Vault
+- **Secure Access**: Kubernetes Service Accounts authenticate with Vault
+- **Dynamic Injection**: Secrets injected into pods at runtime
+
+### Architecture Flow
+```
+Vault (Secret Source)
+    ↓ (Kubernetes Auth)
+SecretStore (Connection Bridge)
+    ↓ (Fetches secrets)
+ExternalSecret (Mapping Definition)
+    ↓ (Creates/Updates)
+Kubernetes Secret (Used by Pods)
+```
+
+### Configured Secrets
+
+#### Database Credentials
+- **Vault Path**: `secret/myapp/db`
+- **K8s Secret**: `myapp-db-credentials`
+- **Keys**: `username`, `password`
+
+#### API Keys
+- **Vault Path**: `secret/myapp/api`
+- **Keys**: `api_key`, `api_secret`
+
+### Usage in Your Application
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: myapp
+spec:
+  containers:
+  - name: app
+    image: myapp:latest
+    env:
+    - name: DB_USERNAME
+      valueFrom:
+        secretKeyRef:
+          name: myapp-db-credentials
+          key: username
+    - name: DB_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: myapp-db-credentials
+          key: password
+```
+
+### Adding New Secrets
+
+#### 1. Store in Vault
+```bash
+VAULT_POD=$(kubectl get pod -n vault -l app.kubernetes.io/name=vault -o jsonpath="{.items[0].metadata.name}")
+
+kubectl exec -n vault $VAULT_POD -- vault kv put secret/myapp/newsecret \
+  key1=value1 \
+  key2=value2
+```
+
+#### 2. Create ExternalSecret
+```yaml
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: my-new-secret
+  namespace: default
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: vault-backend
+    kind: SecretStore
+  target:
+    name: my-k8s-secret
+    creationPolicy: Owner
+  data:
+    - secretKey: key1
+      remoteRef:
+        key: myapp/newsecret
+        property: key1
+```
+
+#### 3. Apply Configuration
+```bash
+kubectl apply -f external-secret-new.yaml
+```
+
+### Troubleshooting ESO
+
+#### Check ESO Operator Status
+```bash
+kubectl get pods -n external-secrets
+kubectl logs -n external-secrets -l app.kubernetes.io/name=external-secrets
+```
+
+#### Check ExternalSecret Status
+```bash
+kubectl get externalsecret
+kubectl describe externalsecret myapp-db-secret
+```
+
+#### Verify SecretStore Connection
+```bash
+kubectl get secretstore
+kubectl describe secretstore vault-backend
+```
+
+#### Check if Secret was Created
+```bash
+kubectl get secret myapp-db-credentials
+kubectl describe secret myapp-db-credentials
+```
+
+#### View Secret Values (for debugging)
+```bash
+kubectl get secret myapp-db-credentials -o jsonpath='{.data.username}' | base64 -d
+kubectl get secret myapp-db-credentials -o jsonpath='{.data.password}' | base64 -d
+```
+
+### Secret Rotation
+
+ESO automatically refreshes secrets based on `refreshInterval` (default: 1h).
+
+To force immediate refresh:
+```bash
+kubectl annotate externalsecret myapp-db-secret force-sync=$(date +%s) --overwrite
+```
+
+### Security Best Practices
+
+1. **Least Privilege**: Each application should have its own Vault role with minimal permissions
+2. **Namespace Isolation**: Use separate SecretStores per namespace
+3. **Audit Logging**: Enable Vault audit logs to track secret access
+4. **Secret Rotation**: Regularly rotate secrets in Vault
+5. **Production Setup**: Replace dev mode Vault with production HA setup
 
 **Made with ❤️ by DevOps Team**
 
