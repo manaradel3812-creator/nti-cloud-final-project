@@ -12,36 +12,31 @@ on:
           - nonprod
           - prod
 
-
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Checkout repository مع submodules
-      - name: Checkout repository with submodules
+      # 1️⃣ Checkout repository
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: true
 
-      # 2️⃣ Run Gitleaks (secrets scan)
+      # 2️⃣ Gitleaks Scan
       - name: Run Gitleaks
         uses: zricethezav/gitleaks-action@v1
         with:
           verbose: true
 
-      # 3️⃣ Run Semgrep (security scan)
+      # 3️⃣ Semgrep Security Scan
       - name: Security scan with Semgrep
         uses: returntocorp/semgrep-action@v1
         with:
           config: p/ci
           fail_on_error: true
 
-  
-
-   
-
-      # 3️⃣ تحميل Terraform outputs
+      # 4️⃣ Download Terraform outputs
       - name: Download Terraform outputs artifact
         uses: dawidd6/action-download-artifact@v3
         with:
@@ -50,8 +45,8 @@ jobs:
           path: .
           workflow_conclusion: success
           search_artifacts: true
-      
-      # 4️⃣ Parse Terraform Outputs
+
+      # 5️⃣ Parse Terraform Outputs
       - name: Parse Terraform Outputs
         id: parse_vars
         run: |
@@ -60,11 +55,9 @@ jobs:
             exit 1
           fi
 
-          # 👇 Kubernetes cluster info
           echo "CLUSTER_NAME=$(jq -r '.eks_cluster_name.value' tf-outputs.json)" >> $GITHUB_ENV
           echo "AWS_REGION=$(jq -r '.aws_region.value // "us-east-1"' tf-outputs.json)" >> $GITHUB_ENV
 
-          # 👇 ECR repository URL dynamic fallback
           ECR_REPO=$(jq -r '
             if has("manar_app_ecr_url") then .manar_app_ecr_url.value
             elif has("ecr_repository_url") then .ecr_repository_url.value
@@ -73,17 +66,14 @@ jobs:
           ' tf-outputs.json)
 
           if [ -z "$ECR_REPO" ]; then
-            echo "❌ No ECR repository URL found in Terraform outputs!"
+            echo "❌ No ECR repository URL found!"
             exit 1
           fi
 
           echo "ECR_REPOSITORY=$ECR_REPO" >> $GITHUB_ENV
-          echo "IMAGE_TAG=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_ENV
+          echo "IMAGE_TAG=$(echo $GITHUB_SHA | cut -c1-7)" >> $GITHUB_ENV
 
-          # ✅ debug
-          echo "ECR_REPOSITORY is set to $ECR_REPO"
-
-      # 5️⃣ Configure AWS Credentials
+      # 6️⃣ Configure AWS Credentials
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -91,55 +81,53 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # 6️⃣ Login to Amazon ECR
+      # 7️⃣ Login to Amazon ECR
       - name: Login to Amazon ECR
-        id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # 7️⃣ Optional: Login to Docker Hub (إذا تريد push هناك أيضًا)
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v2
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_TOKEN }}
-
-      # 8️⃣ Build, Tag, and Push Docker image to ECR
+      # 8️⃣ Build & Push Docker Image
       - name: Build and Push Image to ECR
         run: |
-          # لو الملف باسم Dokerfile غير اسم Dockerfile
           if [ -f "Dokerfile" ]; then mv Dokerfile Dockerfile; fi
           if [ -f "${{ github.workspace }}/appmanar/Dokerfile" ]; then
             mv "${{ github.workspace }}/appmanar/Dokerfile" "${{ github.workspace }}/appmanar/Dockerfile"
           fi
-          # Build image
-          docker build -t ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} "${{ github.workspace }}/appmanar"
-          
-          # Tag latest
-          docker tag ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} ${{ env.ECR_REPOSITORY }}:latest
 
-          # Push both tags to ECR
-          docker push ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
-          docker push ${{ env.ECR_REPOSITORY }}:latest
+          docker build -t $ECR_REPOSITORY:$IMAGE_TAG "${{ github.workspace }}/appmanar"
+          docker tag $ECR_REPOSITORY:$IMAGE_TAG $ECR_REPOSITORY:latest
 
-      # 9️⃣ Setup Kubernetes Tools
+          docker push $ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REPOSITORY:latest
+
+      # 9️⃣ Setup kubectl
       - name: Setup kubectl
         uses: azure/setup-kubectl@v4
 
+      # 🔟 Setup Helm
       - name: Setup Helm
         uses: azure/setup-helm@v4
 
-      # 🔟 Update kubeconfig
+      # 1️⃣1️⃣ Update kubeconfig
       - name: Update kubeconfig
         run: |
-          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+          aws eks update-kubeconfig \
+            --region $AWS_REGION \
+            --name $CLUSTER_NAME
 
-      # 1️⃣1️⃣ Helm Upgrade/Install
+      # 1️⃣2️⃣ Delete old ingress (fix Helm ownership issue)
+      - name: Delete old ingress if exists
+        run: |
+          kubectl delete ingress platform-ingress \
+            --namespace default \
+            --ignore-not-found
+
+      # 1️⃣3️⃣ Deploy via Helm
       - name: Deploy to EKS via Helm
         run: |
           helm upgrade --install manarapp "${{ github.workspace }}/helmchart" \
             --namespace default \
             --create-namespace \
-            --set image.repository=${{ env.ECR_REPOSITORY }} \
-            --set image.tag=${{ env.IMAGE_TAG }} \
+            --set image.repository=$ECR_REPOSITORY \
+            --set image.tag=$IMAGE_TAG \
             --set replicaCount=1 \
             --wait --timeout 5m0s
