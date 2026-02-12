@@ -1,5 +1,4 @@
 name: CD Pipeline
-
 on:
   workflow_dispatch:
     inputs:
@@ -16,16 +15,15 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-
       # 1️⃣ Checkout repository
       - name: Checkout repository
-        uses: actions/download-artifact@latest
+        uses: actions/checkout@v4
         with:
           submodules: true
 
-      # 2️⃣ Download CI outputs artifact (if CI workflow uploaded it)
+      # 2️⃣ Download CI outputs artifact
       - name: Download Terraform & ECR info from CI
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: terraform-outputs
           path: .
@@ -37,8 +35,8 @@ jobs:
           CLUSTER_NAME=$(jq -r '.eks_cluster_name.value' tf-outputs.json)
           AWS_REGION=$(jq -r '.aws_region.value // "us-east-1"' tf-outputs.json)
           ECR_REPOSITORY=$(jq -r '.manar_app_ecr_url.value' tf-outputs.json)
-          IMAGE_TAG=$(jq -r '.image_tag.value // "'"${GITHUB_RUN_NUMBER}"'"')
-
+          IMAGE_TAG=$(jq -r '.image_tag.value // "'"${GITHUB_RUN_NUMBER}"'"' tf-outputs.json)
+          
           echo "CLUSTER_NAME=$CLUSTER_NAME" >> $GITHUB_ENV
           echo "AWS_REGION=$AWS_REGION" >> $GITHUB_ENV
           echo "ECR_REPOSITORY=$ECR_REPOSITORY" >> $GITHUB_ENV
@@ -55,10 +53,8 @@ jobs:
       # 5️⃣ Login to AWS ECR
       - name: Login to AWS ECR
         uses: aws-actions/amazon-ecr-login@v2
-        env:
-          AWS_REGION: ${{ env.AWS_REGION }}
 
-      # 6️⃣ Scan image with Trivy
+      # 6️⃣ Scan image with Trivy (Security Gate)
       - name: Trivy vulnerability scan
         uses: aquasecurity/trivy-action@master
         with:
@@ -69,38 +65,56 @@ jobs:
           vuln-type: os,library
           severity: CRITICAL,HIGH
 
-      # 7️⃣ Checkout GitOps repo
+      # 7️⃣ Manual Approval (للبيئة الإنتاجية)
+      - name: Manual Approval Gate
+        if: ${{ github.event.inputs.deploy_mode == 'manual' }}
+        uses: trstringer/manual-approval@v1
+        with:
+          secret: ${{ github.TOKEN }}
+          approvers: manaradel3812-creator
+          minimum-approvals: 1
+          issue-title: "Deploying image ${{ env.IMAGE_TAG }} to production"
+
+      # 8️⃣ Checkout GitOps repository
       - name: Checkout GitOps repository
         run: |
           git clone https://${{ secrets.GITOPS_TOKEN }}@github.com/manaradel3812-creator/nti-cloud-final-project.git
 
-      # 8️⃣ Update Helm values.yaml with new image tag
+      # 9️⃣ Update Helm values.yaml with new image tag
       - name: Update Helm values.yaml
         run: |
-          cd gitops-repo
+          cd nti-cloud-final-project
           sed -i "s/tag: .*/tag: \"${{ env.IMAGE_TAG }}\"/g" charts/hello-app/values.yaml
+          
           git config --global user.email "action@github.com"
           git config --global user.name "GitHub Action"
           git add charts/hello-app/values.yaml
           git commit -m "Update image tag to ${{ env.IMAGE_TAG }} [skip ci]" || echo "No changes to commit"
           git push origin main
 
-      # 9️⃣ Setup kubectl
+      # 🔟 Setup kubectl
       - name: Setup kubectl
         uses: azure/setup-kubectl@v4
 
-      # 🔟 Setup Helm
+      # 1️⃣1️⃣ Setup Helm
       - name: Setup Helm
         uses: azure/setup-helm@v4
 
-      # 1️⃣1️⃣ Update kubeconfig
+      # 1️⃣2️⃣ Update kubeconfig
       - name: Update kubeconfig
         run: |
           aws eks update-kubeconfig \
             --region ${{ env.AWS_REGION }} \
             --name ${{ env.CLUSTER_NAME }}
 
-      # 1️⃣2️⃣ Apply ArgoCD Application YAML
+      # 1️⃣3️⃣ Apply ArgoCD Application YAML
       - name: Apply ArgoCD Application
         run: |
-          kubectl apply -f gitops-repo/k8s-configs/argocd-app.yaml
+          kubectl apply -f nti-cloud-final-project/k8s-configs/argocd-app.yaml
+
+      # 1️⃣4️⃣ Verify Deployment
+      - name: Verify deployment
+        run: |
+          echo "Waiting for ArgoCD to sync..."
+          sleep 30
+          kubectl get pods -n default
