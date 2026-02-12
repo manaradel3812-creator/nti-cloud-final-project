@@ -13,7 +13,7 @@ on:
           - prod
 
 env:
-  AWS_REGION: us-east-1   # Default region (will be overridden if found in tf outputs)
+  AWS_REGION: us-east-1   # Default region (can be overridden by Terraform outputs)
 
 jobs:
   build-and-deploy:
@@ -49,7 +49,7 @@ jobs:
           workflow_conclusion: success
           search_artifacts: true
 
-      # 5️⃣ Parse Terraform Outputs (Secure)
+      # 5️⃣ Parse Terraform Outputs (secure)
       - name: Parse Terraform Outputs
         run: |
           if [ ! -f "tf-outputs.json" ]; then
@@ -57,6 +57,7 @@ jobs:
             exit 1
           fi
 
+          # Read outputs from Terraform JSON
           CLUSTER_NAME=$(jq -r '.eks_cluster_name.value' tf-outputs.json)
           AWS_REGION_FROM_TF=$(jq -r '.aws_region.value // empty' tf-outputs.json)
 
@@ -72,12 +73,15 @@ jobs:
             exit 1
           fi
 
+          # Override AWS region if found
           if [ -n "$AWS_REGION_FROM_TF" ]; then
             echo "AWS_REGION=$AWS_REGION_FROM_TF" >> $GITHUB_ENV
           fi
 
+          # Use short SHA for image tag
           IMAGE_TAG=$(echo "$GITHUB_SHA" | cut -c1-7)
 
+          # Export environment variables for later steps
           echo "CLUSTER_NAME=$CLUSTER_NAME" >> $GITHUB_ENV
           echo "ECR_REPOSITORY=$ECR_REPO" >> $GITHUB_ENV
           echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
@@ -94,11 +98,11 @@ jobs:
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      # 8️⃣ Build & Push Docker Image (Secure)
+      # 8️⃣ Build & Push Docker Image (secure)
       - name: Build and Push Image to ECR
         run: |
+          # Fix Dockerfile typos if needed
           if [ -f "Dokerfile" ]; then mv Dokerfile Dockerfile; fi
-
           if [ -f "$GITHUB_WORKSPACE/appmanar/Dokerfile" ]; then
             mv "$GITHUB_WORKSPACE/appmanar/Dokerfile" "$GITHUB_WORKSPACE/appmanar/Dockerfile"
           fi
@@ -109,7 +113,7 @@ jobs:
           docker push "$ECR_REPOSITORY:$IMAGE_TAG"
           docker push "$ECR_REPOSITORY:latest"
 
-      # 9️⃣ Trivy Image Scan (Fail on Critical only)
+      # 9️⃣ Trivy Image Scan
       - name: Scan Docker image with Trivy
         uses: aquasecurity/trivy-action@0.24.0
         with:
@@ -140,7 +144,7 @@ jobs:
             --namespace default \
             --ignore-not-found
 
-      # 1️⃣4️⃣ Deploy via Helm (Secure quoting)
+      # 1️⃣4️⃣ Deploy via Helm (secure quoting)
       - name: Deploy to EKS via Helm
         run: |
           helm upgrade --install manarapp "$GITHUB_WORKSPACE/helmchart" \
@@ -151,7 +155,7 @@ jobs:
             --set replicaCount=1 \
             --wait --timeout 5m0s
 
-      # 1️⃣5️⃣ Save outputs for CD Pipeline (Secure Heredoc)
+      # 1️⃣5️⃣ Save outputs for CD Pipeline (secure heredoc)
       - name: Save deployment info for CD
         run: |
           cat > tf-outputs.json <<EOF
