@@ -2,7 +2,7 @@ name: CD Pipeline with ArgoCD
 
 on:
   workflow_run:
-    workflows: ["CI Docker + ECR + Helm Deployment"]
+    workflows: ["CI Docker + ECR + Helm Deployment"]  # ✅ اسم الـ workflow بالضبط
     types:
       - completed
     branches:
@@ -32,26 +32,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Download artifact from CI (للتشغيل التلقائي)
+      # 2️⃣ Download artifact (UNIFIED - works for both auto & manual)
       - name: Download CI outputs
-        if: ${{ github.event_name == 'workflow_run' }}
         uses: dawidd6/action-download-artifact@v3
         with:
-          workflow: ci-docker-ecr.yaml
-          name: terraform-outputs
-          path: .
-          run_id: ${{ github.event.workflow_run.id }}
-
-      # 2️⃣b Download artifact manually (للتشغيل اليدوي)
-      - name: Download latest CI outputs (manual mode)
-        if: ${{ github.event_name == 'workflow_dispatch' }}
-        uses: dawidd6/action-download-artifact@v3
-        with:
-          workflow: ci-docker-ecr.yaml
           name: terraform-outputs
           path: .
           workflow_conclusion: success
           search_artifacts: true
+          # يدور على آخر artifact ناجح بالاسم ده
 
       # 3️⃣ Parse outputs
       - name: Parse CI outputs
@@ -110,7 +99,7 @@ jobs:
             --no-progress \
             "$IMAGE_REF"
 
-      # 7️⃣ Manual Approval (FIXED)
+      # 7️⃣ Manual Approval
       - name: Manual Approval Gate
         if: ${{ github.event.inputs.deploy_mode == 'manual' }}
         uses: trstringer/manual-approval@v1
@@ -118,7 +107,7 @@ jobs:
           secret: ${{ github.TOKEN }}
           approvers: manaradel3812-creator
           minimum-approvals: 1
-          issue-title: "Deploy image ${{ env.IMAGE_TAG }} to production"
+          issue-title: "Deploy image ${{ env.IMAGE_TAG }}"
 
       # 8️⃣ Checkout GitOps repository
       - name: Checkout GitOps repository
@@ -142,7 +131,7 @@ jobs:
           git config --global user.email "action@github.com"
           git config --global user.name "GitHub Action"
           git add charts/hello-app/values.yaml
-          git commit -m "Update image tag to ${NEW_IMAGE_TAG} [skip ci]" || echo "No changes to commit"
+          git commit -m "Update image tag to ${NEW_IMAGE_TAG} [skip ci]" || echo "No changes"
           git push origin main
 
       # 🔟 Setup kubectl
@@ -159,48 +148,27 @@ jobs:
           REGION: ${{ env.AWS_REGION }}
           CLUSTER: ${{ env.CLUSTER_NAME }}
         run: |
-          aws eks update-kubeconfig \
-            --region "$REGION" \
-            --name "$CLUSTER"
+          aws eks update-kubeconfig --region "$REGION" --name "$CLUSTER"
 
-      # 1️⃣3️⃣ Verify ArgoCD is installed
+      # 1️⃣3️⃣ Verify ArgoCD
       - name: Check ArgoCD installation
         run: |
           if ! kubectl get namespace argocd &>/dev/null; then
-            echo "⚠️ ArgoCD namespace not found! Installing..."
+            echo "⚠️ Installing ArgoCD..."
             kubectl create namespace argocd
             kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
-            echo "✅ ArgoCD installed. Waiting for pods..."
             kubectl wait --for=condition=Ready pods --all -n argocd --timeout=300s
-          else
-            echo "✅ ArgoCD already installed"
           fi
 
       # 1️⃣4️⃣ Apply ArgoCD Application
       - name: Apply ArgoCD Application
         run: |
           kubectl apply -f gitops-repo/k8s-configs/argocd-app.yaml
-          
-          echo "✅ ArgoCD Application deployed!"
-          echo "🔄 ArgoCD will sync the changes automatically..."
+          echo "✅ ArgoCD will sync automatically"
 
-      # 1️⃣5️⃣ Wait for ArgoCD sync
-      - name: Wait for ArgoCD sync
-        run: |
-          echo "⏳ Waiting for ArgoCD to detect changes..."
-          sleep 30
-          
-          kubectl get application -n argocd 2>/dev/null || echo "ArgoCD app not ready yet"
-
-      # 1️⃣6️⃣ Verify Deployment
+      # 1️⃣5️⃣ Verify
       - name: Verify deployment
-        env:
-          DEPLOYED_IMAGE: ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
         run: |
-          echo "📊 Deployment Status:"
+          sleep 30
           kubectl get pods -n default
-          kubectl get svc -n default
-          kubectl get ingress -n default
-          
-          echo ""
-          echo "🎯 Image deployed: $DEPLOYED_IMAGE"
+          echo "🎯 Deployed: ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}"
