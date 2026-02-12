@@ -114,6 +114,7 @@ jobs:
             --namespace default \
             --ignore-not-found
 
+
       # 1️⃣3️⃣ Deploy via Helm
       - name: Deploy to EKS via Helm
         run: |
@@ -125,7 +126,8 @@ jobs:
             --set replicaCount=1 \
             --wait --timeout 5m0s
 
-      # 1️⃣4️⃣ Save outputs for CD Pipeline (NEW)
+
+      # 🆕 1️⃣4️⃣ Save outputs for CD Pipeline
       - name: Save deployment info for CD
         run: |
           cat > tf-outputs.json <<EOF
@@ -136,11 +138,15 @@ jobs:
             "image_tag": {"value": "${{ env.IMAGE_TAG }}"}
           }
           EOF
+          
+          echo "✅ Created tf-outputs.json:"
+          cat tf-outputs.json
 
-      # 1️⃣5️⃣ Upload artifact for CD Pipeline (NEW)
+      # 🆕 1️⃣5️⃣ Upload artifact for CD Pipeline
       - name: Upload deployment info
         uses: actions/upload-artifact@v4
         with:
           name: terraform-outputs
           path: tf-outputs.json
           retention-days: 1
+          if-no-files-found: error
