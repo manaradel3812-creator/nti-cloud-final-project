@@ -34,7 +34,7 @@ jobs:
 
       # 2️⃣ Download artifact from CI (للتشغيل التلقائي)
       - name: Download CI outputs
-        if: github.event_name == 'workflow_run'
+        if: ${{ github.event_name == 'workflow_run' }}
         uses: dawidd6/action-download-artifact@v3
         with:
           workflow: ci-docker-ecr.yaml
@@ -44,7 +44,7 @@ jobs:
 
       # 2️⃣b Download artifact manually (للتشغيل اليدوي)
       - name: Download latest CI outputs (manual mode)
-        if: github.event_name == 'workflow_dispatch'
+        if: ${{ github.event_name == 'workflow_dispatch' }}
         uses: dawidd6/action-download-artifact@v3
         with:
           workflow: ci-docker-ecr.yaml
@@ -53,11 +53,10 @@ jobs:
           workflow_conclusion: success
           search_artifacts: true
 
-      # 3️⃣ Parse outputs (FIXED - Security Hardened)
+      # 3️⃣ Parse outputs
       - name: Parse CI outputs
         id: parse_outputs
         env:
-          # ✅ استخدام env variables للأمان
           MANUAL_IMAGE_TAG: ${{ github.event.inputs.image_tag }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
@@ -70,7 +69,6 @@ jobs:
           AWS_REGION=$(jq -r '.aws_region.value // "us-east-1"' tf-outputs.json)
           ECR_REPOSITORY=$(jq -r '.manar_app_ecr_url.value' tf-outputs.json)
           
-          # ✅ استخدام env variable بدلاً من ${{ }}
           if [ "$EVENT_NAME" == "workflow_dispatch" ] && [ -n "$MANUAL_IMAGE_TAG" ]; then
             IMAGE_TAG="$MANUAL_IMAGE_TAG"
           else
@@ -99,10 +97,9 @@ jobs:
       - name: Login to AWS ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      # 6️⃣ Scan image with Trivy (FIXED - Security Hardened)
+      # 6️⃣ Scan image with Trivy
       - name: Trivy vulnerability scan
         env:
-          # ✅ استخدام env variables
           IMAGE_REF: ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
         run: |
           docker run --rm \
@@ -113,47 +110,30 @@ jobs:
             --no-progress \
             "$IMAGE_REF"
 
-      # 7️⃣ Manual Approval (FIXED - Security Hardened)
+      # 7️⃣ Manual Approval (FIXED)
       - name: Manual Approval Gate
-        if: github.event.inputs.deploy_mode == 'manual'
+        if: ${{ github.event.inputs.deploy_mode == 'manual' }}
         uses: trstringer/manual-approval@v1
-        env:
-          # ✅ تمرير البيانات بشكل آمن
-          IMAGE_TAG_SAFE: ${{ env.IMAGE_TAG }}
-          CLUSTER_SAFE: ${{ env.CLUSTER_NAME }}
-          ECR_SAFE: ${{ env.ECR_REPOSITORY }}
         with:
           secret: ${{ github.TOKEN }}
           approvers: manaradel3812-creator
           minimum-approvals: 1
-          issue-title: "Deploy Request - Image Tag ${{ env.IMAGE_TAG }}"
-          issue-body: |
-            **Deployment Request**
-            
-            Please review the following deployment:
-            
-            - **Image**: See issue metadata
-            - **Cluster**: See issue metadata
-            - **Region**: ${{ env.AWS_REGION }}
-            
-            Approve to proceed with deployment.
+          issue-title: "Deploy image ${{ env.IMAGE_TAG }} to production"
 
-      # 8️⃣ Checkout GitOps repository (FIXED)
+      # 8️⃣ Checkout GitOps repository
       - name: Checkout GitOps repository
         env:
           GITOPS_TOKEN: ${{ secrets.GITOPS_TOKEN }}
         run: |
           git clone "https://${GITOPS_TOKEN}@github.com/manaradel3812-creator/nti-cloud-final-project.git" gitops-repo
 
-      # 9️⃣ Update Helm values.yaml (FIXED - Security Hardened)
+      # 9️⃣ Update Helm values.yaml
       - name: Update Helm values.yaml
         env:
-          # ✅ استخدام env variable
           NEW_IMAGE_TAG: ${{ env.IMAGE_TAG }}
         run: |
           cd gitops-repo
           
-          # ✅ استخدام double quotes مع env variable
           sed -i "s|tag:.*|tag: \"${NEW_IMAGE_TAG}\"|g" charts/hello-app/values.yaml
           
           echo "📝 Updated values.yaml:"
@@ -173,10 +153,9 @@ jobs:
       - name: Setup Helm
         uses: azure/setup-helm@v4
 
-      # 1️⃣2️⃣ Update kubeconfig (FIXED)
+      # 1️⃣2️⃣ Update kubeconfig
       - name: Update kubeconfig
         env:
-          # ✅ استخدام env variables
           REGION: ${{ env.AWS_REGION }}
           CLUSTER: ${{ env.CLUSTER_NAME }}
         run: |
@@ -213,7 +192,7 @@ jobs:
           
           kubectl get application -n argocd 2>/dev/null || echo "ArgoCD app not ready yet"
 
-      # 1️⃣6️⃣ Verify Deployment (FIXED)
+      # 1️⃣6️⃣ Verify Deployment
       - name: Verify deployment
         env:
           DEPLOYED_IMAGE: ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
