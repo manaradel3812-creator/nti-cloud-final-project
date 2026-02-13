@@ -23,3 +23,38 @@ output "lbc_iam_role_arn" {
 output "manar_app_ecr_url" {
   value = aws_ecr_repository.manar-app.repository_url
 }
+
+# MongoDB Atlas Outputs
+
+output "mongodb_connection_string" {
+  description = "MongoDB Atlas connection string"
+  value       = "mongodb+srv://${mongodbatlas_cluster.main.connection_strings[0].standard_srv}"
+  sensitive   = true
+}
+
+output "mongodb_cluster_name" {
+  description = "MongoDB cluster name"
+  value       = mongodbatlas_cluster.main.name
+}
+
+output "mongodb_project_id" {
+  description = "MongoDB Atlas project ID"
+  value       = mongodbatlas_project.main.id
+}
+
+output "mongodb_username" {
+  description = "MongoDB username"
+  value       = mongodbatlas_database_user.main.username
+  sensitive   = true
+}
+
+output "mongodb_database_name" {
+  description = "MongoDB database name"
+  value       = var.mongodb_database_name
+}
+
+output "mongodb_srv_address" {
+  description = "MongoDB SRV address"
+  value       = mongodbatlas_cluster.main.srv_address
+  sensitive   = true
+}
