@@ -1,0 +1,137 @@
+# Datadog Helm Chart Values
+
+datadog:
+  # API Keys
+  apiKey: "PLACEHOLDER_DATADOG_API_KEY"
+  appKey: "PLACEHOLDER_DATADOG_APP_KEY"
+  
+  # Site (US or EU)
+  site: "datadoghq.com"
+  
+  # Cluster Name
+  clusterName: "eks-nonprod"
+  
+  # Tags
+  tags:
+    - "env:nonprod"
+    - "project:manar-app"
+    - "managed-by:terraform"
+  
+  # Logs
+  logs:
+    enabled: true
+    containerCollectAll: true
+  
+  # APM (Application Performance Monitoring)
+  apm:
+    portEnabled: true
+    socketEnabled: true
+  
+  # Process Monitoring
+  processAgent:
+    enabled: true
+    processCollection: true
+  
+  # Network Monitoring
+  networkMonitoring:
+    enabled: true
+  
+  # Security Agent
+  securityAgent:
+    compliance:
+      enabled: true
+    runtime:
+      enabled: true
+  
+  # Orchestrator Explorer
+  orchestratorExplorer:
+    enabled: true
+  
+  # Container Images
+  criSocketPath: /var/run/containerd/containerd.sock
+  
+  # Kubelet
+  kubelet:
+    tlsVerify: false
+
+# Agent Configuration
+agents:
+  image:
+    repository: gcr.io/datadoghq/agent
+    tag: 7
+    pullPolicy: IfNotPresent
+  
+  # Resources
+  containers:
+    agent:
+      resources:
+        requests:
+          cpu: 200m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+    processAgent:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi
+    traceAgent:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi
+  
+  # Tolerations for system pods
+  tolerations:
+    - operator: Exists
+
+# Cluster Agent
+clusterAgent:
+  enabled: true
+  replicas: 2
+  
+  # Resources
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  
+  # Metrics Provider
+  metricsProvider:
+    enabled: true
+  
+  # Admission Controller
+  admissionController:
+    enabled: true
+    mutateUnlabelled: false
+
+# Cluster Checks Runner
+clusterChecksRunner:
+  enabled: true
+  replicas: 2
+  
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# Kube State Metrics
+kubeStateMetricsCore:
+  enabled: true
+
+# Service Monitoring
+serviceMonitoring:
+  enabled: true
