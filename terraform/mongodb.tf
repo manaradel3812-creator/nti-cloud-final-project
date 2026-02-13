@@ -1,18 +1,3 @@
-# MongoDB Atlas Provider
-terraform {
-  required_providers {
-    mongodbatlas = {
-      source  = "mongodb/mongodbatlas"
-      version = "~> 1.15"
-    }
-  }
-}
-
-provider "mongodbatlas" {
-  public_key  = var.mongodb_atlas_public_key
-  private_key = var.mongodb_atlas_private_key
-}
-
 # MongoDB Atlas Project
 resource "mongodbatlas_project" "main" {
   name   = "${var.environment}-manar-project"
@@ -87,8 +72,8 @@ resource "mongodbatlas_database_user" "main" {
 resource "mongodbatlas_project_ip_access_list" "eks_nodes" {
   project_id = mongodbatlas_project.main.id
   
-  # Allow all IPs in VPC CIDR (adjust based on your EKS setup)
-  cidr_block = var.vpc_cidr
+  # Allow all IPs in VPC CIDR
+  cidr_block = aws_vpc.main.cidr_block
   comment    = "EKS Cluster CIDR - ${var.environment}"
 }
 
@@ -99,58 +84,4 @@ resource "mongodbatlas_project_ip_access_list" "nat_gateway" {
   project_id = mongodbatlas_project.main.id
   ip_address = var.nat_gateway_ips[count.index]
   comment    = "NAT Gateway ${count.index + 1} - ${var.environment}"
-}
-
-# Private Endpoint (Optional - for production)
-resource "mongodbatlas_privatelink_endpoint" "main" {
-  count = var.enable_private_endpoint ? 1 : 0
-
-  project_id    = mongodbatlas_project.main.id
-  provider_name = "AWS"
-  region        = var.aws_region
-}
-
-# VPC Peering (Optional - for enhanced security)
-resource "mongodbatlas_network_container" "main" {
-  count = var.enable_vpc_peering ? 1 : 0
-
-  project_id       = mongodbatlas_project.main.id
-  atlas_cidr_block = var.mongodb_atlas_cidr
-  provider_name    = "AWS"
-  region_name      = var.mongodb_region
-}
-
-resource "mongodbatlas_network_peering" "main" {
-  count = var.enable_vpc_peering ? 1 : 0
-
-  accepter_region_name   = var.aws_region
-  project_id             = mongodbatlas_project.main.id
-  container_id           = mongodbatlas_network_container.main[0].container_id
-  provider_name          = "AWS"
-  route_table_cidr_block = var.vpc_cidr
-  vpc_id                 = aws_vpc.main.id
-  aws_account_id         = data.aws_caller_identity.current.account_id
-}
-
-# Accept VPC Peering on AWS side
-resource "aws_vpc_peering_connection_accepter" "mongodb_atlas" {
-  count = var.enable_vpc_peering ? 1 : 0
-
-  vpc_peering_connection_id = mongodbatlas_network_peering.main[0].connection_id
-  auto_accept               = true
-
-  tags = {
-    Name        = "MongoDB Atlas Peering - ${var.environment}"
-    Environment = var.environment
-    ManagedBy   = "Terraform"
-  }
-}
-
-# Update route tables
-resource "aws_route" "mongodb_atlas_peering" {
-  count = var.enable_vpc_peering ? length(aws_route_table.private[*].id) : 0
-
-  route_table_id            = aws_route_table.private[count.index].id
-  destination_cidr_block    = var.mongodb_atlas_cidr
-  vpc_peering_connection_id = mongodbatlas_network_peering.main[0].connection_id
 }
