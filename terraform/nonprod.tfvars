@@ -11,3 +11,10 @@ max_size            = 4
 target_group_port   = 80
 nlb_name            = null
 nlb_arn             = null
+# MongoDB Configuration
+mongodb_instance_size     = "M10"
+mongodb_disk_size_gb      = 10
+mongodb_database_name     = "manarapp"
+mongodb_username          = "manarapp"
+enable_private_endpoint   = false
+enable_vpc_peering        = false
