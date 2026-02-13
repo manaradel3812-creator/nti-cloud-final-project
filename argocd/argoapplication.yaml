@@ -1,15 +1,13 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: manar-app
+  name: devops-website  # ⭐ أو سيبيها manar-app
   namespace: argocd
-  finalizers:
-    - resources-finalizer.argocd.argoproj.io
 spec:
   project: default
   
   source:
-    repoURL: https://github.com/manaradel3812-creator/nti-cloud-final-project.git
+    repoURL: https://github.com/YOUR_USERNAME/YOUR_REPO.git
     targetRevision: main
     path: helmchart
     helm:
@@ -31,12 +29,3 @@ spec:
     automated:
       prune: true
       selfHeal: true
-      allowEmpty: false
-    syncOptions:
-      - CreateNamespace=true
-    retry:
-      limit: 5
-      backoff:
-        duration: 5s
-        factor: 2
-        maxDuration: 3m
