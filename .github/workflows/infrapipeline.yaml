@@ -14,33 +14,43 @@ on:
       destroy:
         description: 'Destroy Infrastructure?'
         required: true
-        default: 'false'
+        default: false
         type: boolean
 
+# 🔐 Global Environment Variables (Defined Once Only)
 env:
   TF_DIR: terraform
   AWS_REGION: us-east-1
   TF_VERSION: '1.5.7'
 
+  # MongoDB Atlas credentials passed securely to Terraform
+  TF_VAR_mongodb_atlas_public_key: ${{ secrets.MONGODB_ATLAS_PUBLIC_KEY }}
+  TF_VAR_mongodb_atlas_private_key: ${{ secrets.MONGODB_ATLAS_PRIVATE_KEY }}
+  TF_VAR_mongodb_atlas_org_id: ${{ secrets.MONGODB_ATLAS_ORG_ID }}
+  TF_VAR_mongodb_password: ${{ secrets.MONGODB_PASSWORD }}
+
 jobs:
   terraform:
-    name: Terraform Apply/Destroy
+    name: Terraform Apply / Destroy
     runs-on: ubuntu-latest
 
-    # 🔹 وضعنا inputs كـ env على مستوى job لتجنب أي injection
+    # 🔹 Prevent command injection by mapping inputs to env
     env:
       TF_ENV: ${{ github.event.inputs.env }}
       TF_DESTROY: ${{ github.event.inputs.destroy }}
 
     steps:
+      # 1️⃣ Checkout
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 2️⃣ Setup Terraform
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
+      # 3️⃣ Configure AWS Credentials
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -48,34 +58,80 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      # 4️⃣ Terraform Init
       - name: Terraform Init
         run: |
           set -euo pipefail
           cd "$TF_DIR"
           terraform init -input=false
 
+      # 5️⃣ Terraform Plan
       - name: Terraform Plan
         run: |
           set -euo pipefail
           cd "$TF_DIR"
-          if [ "$TF_DESTROY" == "true" ]; then
+
+          if [ "$TF_DESTROY" = "true" ]; then
             terraform plan -destroy -out=tfplan -input=false -var-file="$TF_ENV.tfvars"
           else
             terraform plan -out=tfplan -input=false -var-file="$TF_ENV.tfvars"
           fi
 
+      # 6️⃣ Terraform Apply
       - name: Terraform Apply
         run: |
           set -euo pipefail
           cd "$TF_DIR"
           terraform apply -auto-approve -input=false tfplan
 
+      # 7️⃣ Generate Outputs File
       - name: Generate Terraform Outputs File
         if: ${{ github.event.inputs.destroy == 'false' }}
         run: |
+          set -euo pipefail
           cd "$TF_DIR"
           terraform output -json > ../tf-outputs.json
 
+      # 8️⃣ Store MongoDB Credentials in Vault
+      - name: Store MongoDB Credentials in Vault
+        if: ${{ github.event.inputs.destroy == 'false' }}
+        run: |
+          set -euo pipefail
+          cd "$TF_DIR"
+
+          echo "Fetching Terraform outputs..."
+
+          MONGODB_URI=$(terraform output -raw mongodb_connection_string)
+          MONGODB_USERNAME=$(terraform output -raw mongodb_username)
+          MONGODB_DATABASE=$(terraform output -raw mongodb_database_name)
+          MONGODB_PASSWORD="${TF_VAR_mongodb_password}"
+
+          echo "Updating kubeconfig..."
+
+          CLUSTER_NAME=$(terraform output -raw eks_cluster_name)
+          aws eks update-kubeconfig --region "$AWS_REGION" --name "$CLUSTER_NAME"
+
+          echo "Finding Vault pod..."
+
+          VAULT_POD=$(kubectl get pod -n vault -l app.kubernetes.io/name=vault -o jsonpath="{.items[0].metadata.name}")
+
+          if [ -z "$VAULT_POD" ]; then
+            echo "Vault pod not found!"
+            exit 1
+          fi
+
+          echo "Storing secrets in Vault..."
+
+          kubectl exec -n vault "$VAULT_POD" -- \
+            vault kv put secret/myapp/mongodb \
+            uri="$MONGODB_URI" \
+            username="$MONGODB_USERNAME" \
+            password="$MONGODB_PASSWORD" \
+            database="$MONGODB_DATABASE"
+
+          echo "✅ MongoDB credentials stored successfully"
+
+      # 9️⃣ Upload Terraform Outputs Artifact
       - name: Upload Terraform Outputs Artifact
         if: ${{ github.event.inputs.destroy == 'false' }}
         uses: actions/upload-artifact@v4
