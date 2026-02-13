@@ -1,24 +1,85 @@
-replicaCount: 1
+replicaCount: 2
 
-# values.yaml
 image:
-  repository: 389068786981.dkr.ecr.us-east-1.amazonaws.com/manar-app 
-  tag: latest
+  repository: ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/manar-app
   pullPolicy: Always
+  tag: "latest"
 
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: "manar-app"  # ممكن تسيبيها أو تغيريها لـ "devops-website"
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 101  # nginx user
+  fsGroup: 101
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true  # ⭐ مهم للأمان
 
 service:
-  type: ClusterIP  # 👈 لازم يكون داخلي عشان الـ NGINX هو اللي يكلمه
+  type: ClusterIP
   port: 80
+  targetPort: 80  # ⭐ عدلي من 8080 لـ 80
 
 ingress:
   enabled: true
-  className: nginx  # 👈 لازم يكون nginx عشان البوابة (NGINX) تلقطه
+  className: "nginx"
   annotations:
-    # مش محتاجين annotations بتاعة AWS هنا لأنها موجودة في الـ Controller نفسه
-    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/rewrite-target: /
   hosts:
-    - host: ""  # لو معندكيش دومين حقيقي سيبيه فاضي والـ NLB هيشتغل بالـ DNS بتاعه
+    - host: ""
       paths:
-        - path: /
+        - path: /  # ⭐ بدل /app خلّيها /
           pathType: Prefix
+  tls: []
+
+resources:
+  limits:
+    cpu: 200m      # ⭐ أقل من backend عادي
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# ⭐ عدلي الـ probes
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 80
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 80
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
