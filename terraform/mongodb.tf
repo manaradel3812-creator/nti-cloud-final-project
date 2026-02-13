@@ -1,4 +1,7 @@
+############################################
 # MongoDB Atlas Project
+############################################
+
 resource "mongodbatlas_project" "main" {
   name   = "${var.environment}-manar-project"
   org_id = var.mongodb_atlas_org_id
@@ -10,7 +13,10 @@ resource "mongodbatlas_project" "main" {
   }
 }
 
+############################################
 # MongoDB Atlas Cluster
+############################################
+
 resource "mongodbatlas_cluster" "main" {
   project_id   = mongodbatlas_project.main.id
   name         = "${var.environment}-manar-cluster"
@@ -31,9 +37,9 @@ resource "mongodbatlas_cluster" "main" {
   provider_auto_scaling_compute_min_instance_size = var.mongodb_min_instance_size
   provider_auto_scaling_compute_max_instance_size = var.mongodb_max_instance_size
 
-  # Cloud Backup (enabled for prod only)
+  # Cloud Backup (prod only)
   cloud_backup = var.environment == "prod" ? true : false
-  
+
   # MongoDB Version
   mongo_db_major_version = "7.0"
 
@@ -43,7 +49,10 @@ resource "mongodbatlas_cluster" "main" {
   }
 }
 
+############################################
 # Database User
+############################################
+
 resource "mongodbatlas_database_user" "main" {
   username           = var.mongodb_username
   password           = var.mongodb_password
@@ -66,23 +75,32 @@ resource "mongodbatlas_database_user" "main" {
   }
 }
 
+############################################
 # Network Access - Allow EKS VPC CIDR
+############################################
+
 resource "mongodbatlas_project_ip_access_list" "eks_vpc" {
   project_id = mongodbatlas_project.main.id
   cidr_block = aws_vpc.main.cidr_block
   comment    = "EKS VPC CIDR - ${var.environment}"
 }
 
+############################################
 # Optional: Allow NAT Gateway IPs
+############################################
+
 resource "mongodbatlas_project_ip_access_list" "nat_gateway" {
   count = length(var.nat_gateway_ips)
-  
+
   project_id = mongodbatlas_project.main.id
   ip_address = var.nat_gateway_ips[count.index]
   comment    = "NAT Gateway ${count.index + 1} - ${var.environment}"
 }
 
+############################################
 # Optional: Private Endpoint (for prod)
+############################################
+
 resource "mongodbatlas_privatelink_endpoint" "main" {
   count = var.enable_private_endpoint ? 1 : 0
 
@@ -91,7 +109,10 @@ resource "mongodbatlas_privatelink_endpoint" "main" {
   region        = var.aws_region
 }
 
-# Optional: VPC Peering (for prod)
+############################################
+# Optional: VPC Peering (for enhanced security)
+############################################
+
 resource "mongodbatlas_network_container" "main" {
   count = var.enable_vpc_peering ? 1 : 0
 
@@ -111,4 +132,33 @@ resource "mongodbatlas_network_peering" "main" {
   route_table_cidr_block = aws_vpc.main.cidr_block
   vpc_id                 = aws_vpc.main.id
   aws_account_id         = data.aws_caller_identity.current.account_id
+}
+
+############################################
+# Accept VPC Peering on AWS side
+############################################
+
+resource "aws_vpc_peering_connection_accepter" "mongodb_atlas" {
+  count = var.enable_vpc_peering ? 1 : 0
+
+  vpc_peering_connection_id = mongodbatlas_network_peering.main[0].connection_id
+  auto_accept               = true
+
+  tags = {
+    Name        = "MongoDB Atlas Peering - ${var.environment}"
+    Environment = var.environment
+    ManagedBy   = "Terraform"
+  }
+}
+
+############################################
+# Update Private Route Tables
+############################################
+
+resource "aws_route" "mongodb_atlas_peering" {
+  count = var.enable_vpc_peering ? length(aws_route_table.private[*].id) : 0
+
+  route_table_id            = aws_route_table.private[count.index].id
+  destination_cidr_block    = var.mongodb_atlas_cidr
+  vpc_peering_connection_id = mongodbatlas_network_peering.main[0].connection_id
 }
