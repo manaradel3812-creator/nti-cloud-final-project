@@ -163,30 +163,3 @@ resource "aws_route" "mongodb_atlas_peering" {
   vpc_peering_connection_id = mongodbatlas_network_peering.main[0].connection_id
 }
 
-# ==============================================
-# Data Sources
-# ==============================================
-
-# Get current AWS account information
-data "aws_caller_identity" "current" {
-  # This data source retrieves:
-  # - account_id: The AWS Account ID
-  # - arn: The ARN of the caller
-  # - user_id: The unique identifier of the caller
-}
-
-# Get current AWS region
-data "aws_region" "current" {
-  # This retrieves the current region name
-}
-
-# Get available availability zones
-data "aws_availability_zones" "available" {
-  state = "available"
-  
-  # Filter out local zones if needed
-  filter {
-    name   = "opt-in-status"
-    values = ["opt-in-not-required"]
-  }
-}
