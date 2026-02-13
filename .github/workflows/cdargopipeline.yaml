@@ -5,17 +5,17 @@ on:
     workflows: ["CI Docker + ECR + Helm Deployment"]
     types:
       - completed
-  
+
   workflow_dispatch:
     inputs:
       image_tag:
-        description: 'Image tag to deploy'
+        description: "Image tag to deploy"
         required: true
-        default: 'latest'
+        default: "latest"
       env:
-        description: 'Environment'
+        description: "Environment"
         required: true
-        default: 'nonprod'
+        default: "nonprod"
         type: choice
         options:
           - nonprod
@@ -29,19 +29,15 @@ jobs:
   update-argocd:
     name: Update ArgoCD Application
     runs-on: ubuntu-latest
-    
-    # Only run if CI pipeline succeeded
+
     if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
-    
+
     steps:
-      # 1️⃣ Checkout Repository
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      # 2️⃣ Download CI Pipeline Outputs
       - name: Download CI outputs
         if: github.event_name == 'workflow_run'
         uses: dawidd6/action-download-artifact@v3
@@ -52,31 +48,22 @@ jobs:
           search_artifacts: true
           workflow_conclusion: success
 
-      # 3️⃣ Parse Deployment Info
       - name: Parse deployment info
-        id: parse_info
         run: |
           if [ -f "tf-outputs.json" ]; then
             CLUSTER_NAME=$(jq -r '.eks_cluster_name.value' tf-outputs.json)
             ECR_REPO=$(jq -r '.manar_app_ecr_url.value' tf-outputs.json)
             IMAGE_TAG=$(jq -r '.image_tag.value' tf-outputs.json)
           else
-            echo "Using manual inputs..."
             CLUSTER_NAME="eks-${{ github.event.inputs.env }}"
             ECR_REPO="${{ secrets.ECR_REPOSITORY_URL }}"
             IMAGE_TAG="${{ github.event.inputs.image_tag }}"
           fi
-          
+
           echo "CLUSTER_NAME=$CLUSTER_NAME" >> $GITHUB_ENV
           echo "ECR_REPOSITORY=$ECR_REPO" >> $GITHUB_ENV
           echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
-          
-          echo "📦 Deployment Info:"
-          echo "  Cluster: $CLUSTER_NAME"
-          echo "  ECR Repo: $ECR_REPO"
-          echo "  Image Tag: $IMAGE_TAG"
 
-      # 4️⃣ Configure AWS Credentials
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -84,56 +71,37 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # 5️⃣ Setup kubectl
       - name: Setup kubectl
         uses: azure/setup-kubectl@v4
 
-      # 6️⃣ Update kubeconfig
       - name: Update kubeconfig
         run: |
           aws eks update-kubeconfig \
             --region ${{ env.AWS_REGION }} \
             --name ${{ env.CLUSTER_NAME }}
 
-      # 7️⃣ Get ArgoCD Admin Password
-      - name: Get ArgoCD credentials
-        id: argocd_creds
-        run: |
-          ARGOCD_PASSWORD=$(kubectl -n ${{ env.ARGOCD_NAMESPACE }} \
-            get secret argocd-initial-admin-secret \
-            -o jsonpath="{.data.password}" | base64 -d)
-          
-          echo "::add-mask::$ARGOCD_PASSWORD"
-          echo "ARGOCD_PASSWORD=$ARGOCD_PASSWORD" >> $GITHUB_ENV
-          
-          # Get ArgoCD server URL
-          ARGOCD_SERVER=$(kubectl -n ${{ env.ARGOCD_NAMESPACE }} \
-            get svc argocd-server \
-            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-          
-          if [ -z "$ARGOCD_SERVER" ]; then
-            ARGOCD_SERVER="argocd-server.${{ env.ARGOCD_NAMESPACE }}.svc.cluster.local"
-          fi
-          
-          echo "ARGOCD_SERVER=$ARGOCD_SERVER" >> $GITHUB_ENV
-          echo "✅ ArgoCD Server: $ARGOCD_SERVER"
-
-      # 8️⃣ Install ArgoCD CLI
       - name: Install ArgoCD CLI
         run: |
-          curl -sSL -o argocd-linux-amd64 https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
-          sudo install -m 555 argocd-linux-amd64 /usr/local/bin/argocd
-          rm argocd-linux-amd64
+          curl -sSL -o argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+          chmod +x argocd
+          sudo mv argocd /usr/local/bin/
           argocd version --client
 
-      # 9️⃣ Port Forward ArgoCD (for CLI access)
-      - name: Setup ArgoCD port-forward
+      - name: Port Forward ArgoCD
         run: |
           kubectl port-forward svc/argocd-server -n ${{ env.ARGOCD_NAMESPACE }} 8080:443 &
           sleep 5
           echo "ARGOCD_SERVER=localhost:8080" >> $GITHUB_ENV
 
-      # 🔟 Login to ArgoCD
+      - name: Get ArgoCD password
+        run: |
+          PASS=$(kubectl -n ${{ env.ARGOCD_NAMESPACE }} \
+            get secret argocd-initial-admin-secret \
+            -o jsonpath="{.data.password}" | base64 -d)
+
+          echo "::add-mask::$PASS"
+          echo "ARGOCD_PASSWORD=$PASS" >> $GITHUB_ENV
+
       - name: Login to ArgoCD
         run: |
           argocd login ${{ env.ARGOCD_SERVER }} \
@@ -141,121 +109,31 @@ jobs:
             --password ${{ env.ARGOCD_PASSWORD }} \
             --insecure
 
-      # 1️⃣1️⃣ Create/Update ArgoCD Application
-      - name: Update ArgoCD Application manifest
+      - name: Update Application Manifest
         run: |
-          # Update application.yaml with actual values
           sed -i "s|PLACEHOLDER_ECR_REPO|${{ env.ECR_REPOSITORY }}|g" argocd/application.yaml
           sed -i "s|PLACEHOLDER_IMAGE_TAG|${{ env.IMAGE_TAG }}|g" argocd/application.yaml
-          sed -i "s|YOUR_USERNAME|${{ github.repository_owner }}|g" argocd/application.yaml
-          sed -i "s|YOUR_REPO|${{ github.event.repository.name }}|g" argocd/application.yaml
-          
-          echo "📝 Updated ArgoCD Application:"
-          cat argocd/application.yaml
 
-      # 1️⃣2️⃣ Apply ArgoCD Application
-      - name: Deploy/Update ArgoCD Application
+      - name: Apply ArgoCD Application
         run: |
           kubectl apply -f argocd/application.yaml
-          
-          echo "✅ ArgoCD Application created/updated"
 
-      # 1️⃣3️⃣ Sync Application (Force Deployment)
-      - name: Sync ArgoCD Application
+      - name: Sync Application
         run: |
-          argocd app sync manar-app \
-            --force \
-            --timeout 300
-          
-          echo "🔄 Application sync initiated"
+          argocd app sync manar-app --force --timeout 300
 
-      # 1️⃣4️⃣ Wait for Sync Completion
-      - name: Wait for deployment
+      - name: Wait for Deployment
         run: |
-          argocd app wait manar-app \
-            --timeout 300 \
-            --health
-          
-          echo "✅ Application is healthy"
+          argocd app wait manar-app --timeout 300 --health
 
-      # 1️⃣5️⃣ Get Application Status
-      - name: Get ArgoCD Application Status
+      - name: Verify Deployment
         run: |
-          echo "📊 Application Status:"
-          argocd app get manar-app
-          
-          echo ""
-          echo "🔍 Application Details:"
-          kubectl get all -n default -l app.kubernetes.io/instance=manar-app
-
-      # 1️⃣6️⃣ Verify Deployment
-      - name: Verify deployment
-        run: |
-          echo "🔎 Verifying deployment..."
-          
-          # Check pods
-          kubectl get pods -n default -l app=manar-app
-          
-          # Check deployment
           kubectl rollout status deployment/manar-app -n default --timeout=300s
-          
-          # Get pod details
-          echo ""
-          echo "📦 Pod Details:"
-          kubectl describe pods -n default -l app=manar-app | grep -A 5 "Image:"
-          
-          echo ""
-          echo "✅ Deployment verified successfully!"
 
-      # 1️⃣7️⃣ Update Image Tag in Git (Optional - for GitOps)
-      - name: Update Helm values in Git
-        if: github.event_name == 'workflow_run'
+      - name: Deployment Summary
         run: |
-          # Update values.yaml with new image tag
-          sed -i "s|tag:.*|tag: \"${{ env.IMAGE_TAG }}\"|g" helmchart/values.yaml
-          
-          # Commit and push if changes exist
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          
-          if git diff --quiet; then
-            echo "No changes to commit"
-          else
-            git add helmchart/values.yaml
-            git commit -m "🚀 Update image tag to ${{ env.IMAGE_TAG }}"
-            git push
-            echo "✅ Updated values.yaml with new image tag"
-          fi
-
-      # 1️⃣8️⃣ Deployment Summary
-      - name: 🚀 Deployment Summary
-        run: |
-          echo "=============================================="
-          echo "✅ CD PIPELINE COMPLETED SUCCESSFULLY!"
-          echo "=============================================="
-          echo "📦 Application: manar-app"
-          echo "🏷️  Image Tag: ${{ env.IMAGE_TAG }}"
-          echo "🖼️  ECR Repository: ${{ env.ECR_REPOSITORY }}"
-          echo "🎯 Cluster: ${{ env.CLUSTER_NAME }}"
-          echo "🌍 Region: ${{ env.AWS_REGION }}"
-          echo ""
-          echo "🔗 ArgoCD UI:"
-          echo "   https://${{ env.ARGOCD_SERVER }}/applications/manar-app"
-          echo ""
-          echo "📊 Check status:"
-          echo "   kubectl get all -n default -l app=manar-app"
-          echo "=============================================="
-
-      # 1️⃣9️⃣ Send Notification (Optional)
-      - name: Send Slack notification
-        if: always()
-        uses: 8398a7/action-slack@v3
-        with:
-          status: ${{ job.status }}
-          text: |
-            CD Pipeline ${{ job.status }}
-            Application: manar-app
-            Image: ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
-            Environment: ${{ github.event.inputs.env }}
-          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
-        continue-on-error: true
+          echo "====================================="
+          echo "CD PIPELINE COMPLETED SUCCESSFULLY"
+          echo "Image: ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}"
+          echo "Cluster: ${{ env.CLUSTER_NAME }}"
+          echo "====================================="
