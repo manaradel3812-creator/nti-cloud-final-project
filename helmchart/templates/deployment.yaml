@@ -12,85 +12,46 @@ spec:
   template:
     metadata:
       annotations:
-        # Datadog annotations for APM
-        ad.datadoghq.com/manar-app.logs: '[{"source":"nodejs","service":"manar-app"}]'
-        ad.datadoghq.com/manar-app.tags: '{"env":"{{ .Values.environment }}","version":"{{ .Values.image.tag }}"}'
+        # Datadog annotations (if needed)
+        ad.datadoghq.com/manar-app.logs: '[{"source":"nginx","service":"devops-website"}]'
       labels:
         {{- include "manar-app.selectorLabels" . | nindent 8 }}
-        tags.datadoghq.com/env: "{{ .Values.environment }}"
-        tags.datadoghq.com/service: "manar-app"
-        tags.datadoghq.com/version: "{{ .Values.image.tag }}"
     spec:
       serviceAccountName: {{ include "manar-app.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
       - name: {{ .Chart.Name }}
+        securityContext:
+          {{- toYaml .Values.securityContext | nindent 12 }}
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         ports:
         - name: http
-          containerPort: 8080
+          containerPort: 80  # ⭐ عدلي من 8080 لـ 80
           protocol: TCP
         
-        # Environment variables from MongoDB secret
-        env:
-        - name: MONGODB_URI
-          valueFrom:
-            secretKeyRef:
-              name: mongodb-secret
-              key: MONGODB_URI
-        - name: MONGODB_USERNAME
-          valueFrom:
-            secretKeyRef:
-              name: mongodb-secret
-              key: MONGODB_USERNAME
-        - name: MONGODB_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: mongodb_secret
-              key: MONGODB_PASSWORD
-        - name: MONGODB_DATABASE
-          valueFrom:
-            secretKeyRef:
-              name: mongodb-secret
-              key: MONGODB_DATABASE
-        
-        # Datadog APM environment variables
-        - name: DD_AGENT_HOST
-          valueFrom:
-            fieldRef:
-              fieldPath: status.hostIP
-        - name: DD_ENV
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.labels['tags.datadoghq.com/env']
-        - name: DD_SERVICE
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.labels['tags.datadoghq.com/service']
-        - name: DD_VERSION
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.labels['tags.datadoghq.com/version']
-        - name: DD_LOGS_INJECTION
-          value: "true"
-        - name: DD_TRACE_SAMPLE_RATE
-          value: "1"
-        - name: DD_PROFILING_ENABLED
-          value: "true"
+        # ⭐ لو كنتي مش محتاجة MongoDB، احذفي الـ env variables
+        # أو سيبيها لو عايزة تضيفي backend لاحقاً
         
         livenessProbe:
-          httpGet:
-            path: /health
-            port: http
-          initialDelaySeconds: 30
-          periodSeconds: 10
+          {{- toYaml .Values.livenessProbe | nindent 12 }}
         
         readinessProbe:
-          httpGet:
-            path: /ready
-            port: http
-          initialDelaySeconds: 10
-          periodSeconds: 5
+          {{- toYaml .Values.readinessProbe | nindent 12 }}
         
         resources:
           {{- toYaml .Values.resources | nindent 12 }}
+        
+        # ⭐ مهم: nginx محتاج write access لهذه المجلدات
+        volumeMounts:
+        - name: cache
+          mountPath: /var/cache/nginx
+        - name: run
+          mountPath: /var/run
+      
+      volumes:
+      - name: cache
+        emptyDir: {}
+      - name: run
+        emptyDir: {}
