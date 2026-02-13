@@ -265,6 +265,85 @@ jobs:
             echo "⚠️ Secret not found. Check ESO logs:"
             kubectl logs -n external-secrets -l app.kubernetes.io/name=external-secrets --tail=50
           fi
+          - name: Deploy Datadog Agent
+        run: |
+          helm repo add datadog https://helm.datadoghq.com
+          helm repo update
+          
+          # Update values with actual API keys
+          sed -i "s|PLACEHOLDER_DATADOG_API_KEY|${{ secrets.DATADOG_API_KEY }}|g" k8s-configs/datadog-values.yaml
+          sed -i "s|PLACEHOLDER_DATADOG_APP_KEY|${{ secrets.DATADOG_APP_KEY }}|g" k8s-configs/datadog-values.yaml
+          
+          helm upgrade --install datadog datadog/datadog \
+            -n datadog \
+            --create-namespace \
+            -f k8s-configs/datadog-values.yaml \
+            --wait --timeout 10m
+
+      - name: Wait for Datadog Agent
+        run: |
+          kubectl wait --for=condition=ready pod -l app=datadog-agent -n datadog --timeout=300s
+          echo "✅ Datadog Agent deployed successfully"
+
+      - name: Verify Datadog Installation
+        run: |
+          echo "📊 Datadog Agent Status:"
+          kubectl get pods -n datadog
+          
+          echo ""
+          echo "📈 Datadog Cluster Agent:"
+          kubectl get pods -n datadog -l app=datadog-cluster-agent
+          
+          echo ""
+          echo "🔍 Agent Configuration:"
+          kubectl get configmap -n datadog datadog-cluster-agent -o yaml | head -20
+
+      - name: Create Datadog Dashboards ConfigMap
+        run: |
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: datadog-dashboards
+            namespace: datadog
+          data:
+            mongodb-dashboard.json: |
+              {
+                "title": "MongoDB Atlas Monitoring",
+                "widgets": [
+                  {
+                    "definition": {
+                      "type": "timeseries",
+                      "requests": [
+                        {
+                          "q": "avg:mongodb.connections.current{*}",
+                          "display_type": "line"
+                        }
+                      ],
+                      "title": "MongoDB Connections"
+                    }
+                  }
+                ]
+              }
+            app-dashboard.json: |
+              {
+                "title": "Manar App Performance",
+                "widgets": [
+                  {
+                    "definition": {
+                      "type": "timeseries",
+                      "requests": [
+                        {
+                          "q": "avg:kubernetes.cpu.usage{app:manar-app}",
+                          "display_type": "line"
+                        }
+                      ],
+                      "title": "CPU Usage"
+                    }
+                  }
+                ]
+              }
+          EOF
 
       - name: Deploy Nexus Repository
         run: |
