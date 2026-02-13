@@ -157,3 +157,10 @@ resource "aws_ecr_repository" "manar-app" {
   image_tag_mutability = "MUTABLE"   # أو "IMMUTABLE" لو عايزة تمنعي إعادة الكتابة على نفس الـ tag
   #scan_on_push         = true        # يفحص الصور تلقائي بعد الرفع
 }
+# Get current AWS account ID and caller identity
+data "aws_caller_identity" "current" {}
+
+# Get available AZs
+data "aws_availability_zones" "available" {
+  state = "available"
+}
